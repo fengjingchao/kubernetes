@@ -50,7 +50,6 @@ readonly KUBE_SERVER_BINARIES=("${KUBE_SERVER_TARGETS[@]##*/}")
 # The server platform we are building on.
 readonly KUBE_SERVER_PLATFORMS=(
   linux/amd64
-  linux/arm
 )
 
 # The set of client targets that we are building for all platforms
@@ -63,18 +62,19 @@ readonly KUBE_CLIENT_BINARIES_WIN=("${KUBE_CLIENT_BINARIES[@]/%/.exe}")
 # The set of test targets that we are building for all platforms
 kube::golang::test_targets() {
   local targets=(
-    cmd/integration
-    cmd/gendocs
-    cmd/genkubedocs
-    cmd/genman
-    cmd/mungedocs
-    cmd/genbashcomp
-    cmd/genconversion
-    cmd/gendeepcopy
-    cmd/genswaggertypedocs
-    examples/k8petstore/web-server/src
+    # cmd/integration
+    # cmd/gendocs
+    # cmd/genkubedocs
+    # cmd/genman
+    # cmd/mungedocs
+    # cmd/genbashcomp
+    # cmd/genconversion
+    # cmd/gendeepcopy
+    # cmd/genswaggertypedocs
+    # examples/k8petstore/web-server/src
+    # github.com/onsi/ginkgo/ginkgo
+    # test/e2e/e2e.test
     github.com/onsi/ginkgo/ginkgo
-    test/e2e/e2e.test
   )
   if [ -n "${KUBERNETES_CONTRIB:-}" ]; then
     for contrib in "${KUBERNETES_CONTRIB}"; do
@@ -101,11 +101,6 @@ readonly KUBE_TEST_PORTABLE=(
 # in 'build/build-image/Dockerfile'
 readonly KUBE_CLIENT_PLATFORMS=(
   linux/amd64
-  linux/386
-  linux/arm
-  darwin/amd64
-  darwin/386
-  windows/amd64
 )
 
 # Gigabytes desired for parallel platform builds. 11 is fairly

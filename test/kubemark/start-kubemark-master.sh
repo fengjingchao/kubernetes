@@ -16,34 +16,17 @@
 
 # TODO: figure out how to get etcd tag from some real configuration and put it here.
 
-EVENT_STORE_IP=$1
-EVENT_STORE_URL="http://${EVENT_STORE_IP}:4002"
-if [ "${EVENT_STORE_IP}" == "127.0.0.1" ]; then
-	sudo docker run --net=host -d gcr.io/google_containers/etcd:2.2.1 /usr/local/bin/etcd \
-		--listen-peer-urls http://127.0.0.1:2381 \
-		--addr=127.0.0.1:4002 \
-		--bind-addr=0.0.0.0:4002 \
-		--data-dir=/var/etcd/data
-fi
-
-sudo docker run --net=host -d gcr.io/google_containers/etcd:2.2.1 /usr/local/bin/etcd \
-	--listen-peer-urls http://127.0.0.1:2380 \
-	--addr=127.0.0.1:4001 \
-	--bind-addr=0.0.0.0:4001 \
-	--data-dir=/var/etcd/data
-
-# Increase the allowed number of open file descriptors
 ulimit -n 65536
 
 tar xzf kubernetes-server-linux-amd64.tar.gz
 
-kubernetes/server/bin/kube-scheduler --master=127.0.0.1:8080 --v=2 &> /var/log/kube-scheduler.log &
+kubernetes/server/bin/kube-scheduler --master=127.0.0.1:8080 --v=2 --bind-pods-qps=1000 --bind-pods-burst=1000 --kube-api-qps=1000 --kube-api-burst=1000 &> /var/log/kube-scheduler.log &
 
 kubernetes/server/bin/kube-apiserver \
 	--portal-net=10.0.0.1/24 \
 	--address=0.0.0.0 \
-	--etcd-servers=http://127.0.0.1:4001 \
-	--etcd-servers-overrides=/events#${EVENT_STORE_URL} \
+	--etcd-servers=http://etcd-static-1:2379 \
+	--etcd-servers-overrides=/events#http://etcd-eventstore:2379 \
 	--v=4 \
 	--tls-cert-file=/srv/kubernetes/server.cert \
 	--tls-private-key-file=/srv/kubernetes/server.key \
@@ -56,6 +39,6 @@ kubernetes/server/bin/kube-apiserver \
 until [ "$(curl 127.0.0.1:8080/healthz)" == "ok" ]; do
 	sleep 1
 done
-kubernetes/server/bin/kube-controller-manager --master=127.0.0.1:8080 --service-account-private-key-file=/srv/kubernetes/server.key --root-ca-file=/srv/kubernetes/ca.crt --v=2 &> /var/log/kube-controller-manager.log &
+kubernetes/server/bin/kube-controller-manager --kube-api-qps=1000 --kube-api-burst=1000 --master=127.0.0.1:8080 --service-account-private-key-file=/srv/kubernetes/server.key --root-ca-file=/srv/kubernetes/ca.crt --v=2 &> /var/log/kube-controller-manager.log &
 
 rm -rf kubernetes

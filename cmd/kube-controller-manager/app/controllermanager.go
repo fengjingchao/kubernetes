@@ -261,6 +261,8 @@ func (s *CMServer) Run(_ []string) error {
 	// Override kubeconfig qps/burst settings from flags
 	kubeconfig.QPS = s.KubeAPIQPS
 	kubeconfig.Burst = s.KubeAPIBurst
+	// we had better print kubeconfig
+	glog.Infof("kube-api-qps: %v, kube-api-burst: %v", kubeconfig.QPS, kubeconfig.Burst)
 
 	kubeClient, err := client.New(kubeconfig)
 	if err != nil {

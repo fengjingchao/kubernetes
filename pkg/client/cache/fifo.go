@@ -131,6 +131,13 @@ func (f *FIFO) List() []interface{} {
 	return list
 }
 
+func (f *FIFO) Len() int {
+	f.lock.RLock()
+	defer f.lock.RUnlock()
+
+	return len(f.items)
+}
+
 // ListKeys returns a list of all the keys of the objects currently
 // in the FIFO.
 func (f *FIFO) ListKeys() []string {
