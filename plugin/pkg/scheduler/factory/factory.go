@@ -41,6 +41,7 @@ import (
 	"k8s.io/kubernetes/plugin/pkg/scheduler/api/validation"
 
 	"github.com/golang/glog"
+	"k8s.io/kubernetes/plugin/pkg/scheduler/nodeinfo"
 )
 
 // ConfigFactory knows how to fill out a scheduler config with its support functions.
@@ -66,10 +67,13 @@ type ConfigFactory struct {
 
 	scheduledPodPopulator *framework.Controller
 	modeler               scheduler.SystemModeler
+	nodeInfoStore         nodeinfo.Store
 }
 
 // Initializes the factory.
 func NewConfigFactory(client *client.Client, rateLimiter util.RateLimiter) *ConfigFactory {
+	nodeInfoStore := nodeinfo.NewStore(cache.MetaNamespaceKeyFunc, 30*time.Second)
+
 	c := &ConfigFactory{
 		Client:             client,
 		PodQueue:           cache.NewFIFO(cache.MetaNamespaceKeyFunc),
@@ -79,6 +83,7 @@ func NewConfigFactory(client *client.Client, rateLimiter util.RateLimiter) *Conf
 		ServiceLister:    &cache.StoreToServiceLister{Store: cache.NewStore(cache.MetaNamespaceKeyFunc)},
 		ControllerLister: &cache.StoreToReplicationControllerLister{Store: cache.NewStore(cache.MetaNamespaceKeyFunc)},
 		StopEverything:   make(chan struct{}),
+		nodeInfoStore:    nodeInfoStore,
 	}
 	modeler := scheduler.NewSimpleModeler(&cache.StoreToPodLister{Store: c.PodQueue}, c.ScheduledPodLister)
 	c.modeler = modeler
@@ -98,18 +103,40 @@ func NewConfigFactory(client *client.Client, rateLimiter util.RateLimiter) *Conf
 				if pod, ok := obj.(*api.Pod); ok {
 					c.modeler.LockedAction(func() {
 						c.modeler.ForgetPod(pod)
+
+						err := nodeInfoStore.ConfirmPodScheduled(pod)
+						if err != nil {
+							glog.Errorf("nodeInfoStore.ConfirmPodScheduled failed: %v", err)
+						}
 					})
+
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
 				c.modeler.LockedAction(func() {
+					var pod *api.Pod
+					ok := false
 					switch t := obj.(type) {
 					case *api.Pod:
 						c.modeler.ForgetPod(t)
+						pod = t
+						ok = true
 					case cache.DeletedFinalStateUnknown:
 						c.modeler.ForgetPodByKey(t.Key)
+						// When a delete is dropped, the relist will notice a pod in the store not
+						// in the list, leading to the insertion of a tombstone object which contains
+						// the deleted key/value. Note that this value might be stale.
+						pod, ok = t.Obj.(*api.Pod)
+					}
+
+					if ok {
+						err := nodeInfoStore.RemovePod(pod)
+						if err != nil {
+							glog.Errorf("nodeInfoStore.RemovePod failed: %v", err)
+						}
 					}
 				})
+
 			},
 		},
 	)
@@ -211,7 +238,7 @@ func (f *ConfigFactory) CreateFromKeys(predicateKeys, priorityKeys sets.String, 
 
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	algo := scheduler.NewGenericScheduler(predicateFuncs, priorityConfigs, extenders, f.PodLister, r)
+	algo := scheduler.NewGenericScheduler(predicateFuncs, priorityConfigs, extenders, f.PodLister, f.nodeInfoStore, r)
 
 	podBackoff := podBackoff{
 		perPodBackoff: map[types.NamespacedName]*backoffEntry{},
@@ -235,6 +262,7 @@ func (f *ConfigFactory) CreateFromKeys(predicateKeys, priorityKeys sets.String, 
 		Error:               f.makeDefaultErrorFunc(&podBackoff, f.PodQueue),
 		BindPodsRateLimiter: f.BindPodsRateLimiter,
 		StopEverything:      f.StopEverything,
+		NodeInfoStore:       f.nodeInfoStore,
 	}, nil
 }
 

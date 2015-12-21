@@ -288,7 +288,7 @@ func TestGenericScheduler(t *testing.T) {
 
 	for _, test := range tests {
 		random := rand.New(rand.NewSource(0))
-		scheduler := NewGenericScheduler(test.predicates, test.prioritizers, []algorithm.SchedulerExtender{}, algorithm.FakePodLister(test.pods), random)
+		scheduler := NewGenericScheduler(test.predicates, test.prioritizers, []algorithm.SchedulerExtender{}, algorithm.FakePodLister(test.pods), nil, random)
 		machine, err := scheduler.Schedule(test.pod, algorithm.FakeNodeLister(makeNodeList(test.nodes)))
 		if test.expectsErr {
 			if err == nil {
@@ -313,7 +313,7 @@ func TestFindFitAllError(t *testing.T) {
 		"2": {},
 		"1": {},
 	}
-	_, predicateMap, err := findNodesThatFit(&api.Pod{}, machineToPods, predicates, makeNodeList(nodes), nil)
+	_, predicateMap, err := findNodesThatFit(&api.Pod{}, machineToPods, nil, predicates, makeNodeList(nodes), nil)
 
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
@@ -343,7 +343,7 @@ func TestFindFitSomeError(t *testing.T) {
 		"2": {},
 		"1": {pod},
 	}
-	_, predicateMap, err := findNodesThatFit(pod, machineToPods, predicates, makeNodeList(nodes), nil)
+	_, predicateMap, err := findNodesThatFit(pod, machineToPods, nil, predicates, makeNodeList(nodes), nil)
 
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)

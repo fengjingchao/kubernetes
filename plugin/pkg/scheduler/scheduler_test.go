@@ -191,7 +191,7 @@ func TestSchedulerForgetAssumedPodAfterDelete(t *testing.T) {
 		map[string]algorithm.FitPredicate{"PodFitsHostPorts": predicates.PodFitsHostPorts},
 		[]algorithm.PriorityConfig{},
 		[]algorithm.SchedulerExtender{},
-		modeler.PodLister(),
+		modeler.PodLister(), nil,
 		rand.New(rand.NewSource(time.Now().UnixNano())))
 
 	var gotBinding *api.Binding
@@ -328,7 +328,7 @@ func TestSchedulerRateLimitsBinding(t *testing.T) {
 		map[string]algorithm.FitPredicate{},
 		[]algorithm.PriorityConfig{},
 		[]algorithm.SchedulerExtender{},
-		modeler.PodLister(),
+		modeler.PodLister(), nil,
 		rand.New(rand.NewSource(time.Now().UnixNano())))
 
 	// Rate limit to 1 pod
