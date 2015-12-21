@@ -29,6 +29,7 @@ import (
 	"k8s.io/kubernetes/plugin/pkg/scheduler/metrics"
 
 	"github.com/golang/glog"
+	"k8s.io/kubernetes/plugin/pkg/scheduler/nodeinfo"
 )
 
 // Binder knows how to write a binding.
@@ -71,10 +72,11 @@ type Scheduler struct {
 type Config struct {
 	// It is expected that changes made via modeler will be observed
 	// by NodeLister and Algorithm.
-	Modeler    SystemModeler
-	NodeLister algorithm.NodeLister
-	Algorithm  algorithm.ScheduleAlgorithm
-	Binder     Binder
+	Modeler       SystemModeler
+	NodeInfoStore nodeinfo.Store
+	NodeLister    algorithm.NodeLister
+	Algorithm     algorithm.ScheduleAlgorithm
+	Binder        Binder
 
 	// Rate at which we can create pods
 	// If this field is nil, we don't have any rate limit.
@@ -114,6 +116,9 @@ func (s *Scheduler) Run() {
 			metrics.BindingRateLimiterSaturation.Set(sat)
 		}, metrics.BindingSaturationReportInterval)
 	}
+	if s.config.NodeInfoStore != nil {
+		go util.Until(s.config.NodeInfoStore.CleanupExpiredAssumedPods, 1*time.Second, s.config.StopEverything)
+	}
 	go util.Until(s.scheduleOne, 0, s.config.StopEverything)
 }
 
@@ -147,16 +152,26 @@ func (s *Scheduler) scheduleOne() {
 	// We want to add the pod to the model if and only if the bind succeeds,
 	// but we don't want to race with any deletions, which happen asynchronously.
 	s.config.Modeler.LockedAction(func() {
+		// TODO: This is similar to java synchronize.
+		// This way to guarantee state machine sequences is foncusing and error prone.
 		bindingStart := time.Now()
 		err := s.config.Binder.Bind(b)
-		metrics.BindingLatency.Observe(metrics.SinceInMicroseconds(bindingStart))
 		if err != nil {
 			glog.V(1).Infof("Failed to bind pod: %+v", err)
 			s.config.Recorder.Eventf(pod, api.EventTypeNormal, "FailedScheduling", "Binding rejected: %v", err)
 			s.config.Error(pod, err)
 			return
 		}
+		metrics.BindingLatency.Observe(metrics.SinceInMicroseconds(bindingStart))
 		s.config.Recorder.Eventf(pod, api.EventTypeNormal, "Scheduled", "Successfully assigned %v to %v", pod.Name, dest)
+
+		nodeInfoStore := s.config.NodeInfoStore
+		if nodeInfoStore != nil {
+			err := nodeInfoStore.AssumePod(pod)
+			if err != nil {
+				glog.Errorf("Pod should have object meta!")
+			}
+		}
 		// tell the model to assume that this binding took effect.
 		assumed := *pod
 		assumed.Spec.NodeName = dest

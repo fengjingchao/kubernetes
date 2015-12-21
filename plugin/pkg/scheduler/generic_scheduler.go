@@ -30,6 +30,7 @@ import (
 	"k8s.io/kubernetes/plugin/pkg/scheduler/algorithm"
 	"k8s.io/kubernetes/plugin/pkg/scheduler/algorithm/predicates"
 	schedulerapi "k8s.io/kubernetes/plugin/pkg/scheduler/api"
+	"k8s.io/kubernetes/plugin/pkg/scheduler/nodeinfo"
 )
 
 type FailedPredicateMap map[string]sets.String
@@ -55,12 +56,13 @@ func (f *FitError) Error() string {
 }
 
 type genericScheduler struct {
-	predicates   map[string]algorithm.FitPredicate
-	prioritizers []algorithm.PriorityConfig
-	extenders    []algorithm.SchedulerExtender
-	pods         algorithm.PodLister
-	random       *rand.Rand
-	randomLock   sync.Mutex
+	predicates    map[string]algorithm.FitPredicate
+	prioritizers  []algorithm.PriorityConfig
+	extenders     []algorithm.SchedulerExtender
+	pods          algorithm.PodLister
+	random        *rand.Rand
+	randomLock    sync.Mutex
+	nodeInfoStore nodeinfo.Store
 }
 
 // Schedule tries to schedule the given pod to one of node in the node list.
@@ -82,7 +84,13 @@ func (g *genericScheduler) Schedule(pod *api.Pod, nodeLister algorithm.NodeListe
 		return "", err
 	}
 
-	filteredNodes, failedPredicateMap, err := findNodesThatFit(pod, machinesToPods, g.predicates, nodes, g.extenders)
+	var (
+		filteredNodes      api.NodeList
+		failedPredicateMap FailedPredicateMap
+	)
+
+	filteredNodes, failedPredicateMap, err = findNodesThatFit(pod, machinesToPods, g.nodeInfoStore, g.predicates, nodes, g.extenders)
+
 	if err != nil {
 		return "", err
 	}
@@ -125,7 +133,10 @@ func (g *genericScheduler) selectHost(priorityList schedulerapi.HostPriorityList
 
 // Filters the nodes to find the ones that fit based on the given predicate functions
 // Each node is passed through the predicate functions to determine if it is a fit
-func findNodesThatFit(pod *api.Pod, machineToPods map[string][]*api.Pod, predicateFuncs map[string]algorithm.FitPredicate, nodes api.NodeList, extenders []algorithm.SchedulerExtender) (api.NodeList, FailedPredicateMap, error) {
+func findNodesThatFit(pod *api.Pod, machineToPods map[string][]*api.Pod, nodeInfoStore nodeinfo.Store,
+	predicateFuncs map[string]algorithm.FitPredicate, nodes api.NodeList,
+	extenders []algorithm.SchedulerExtender) (api.NodeList, FailedPredicateMap, error) {
+
 	filtered := []api.Node{}
 	failedPredicateMap := FailedPredicateMap{}
 
@@ -133,6 +144,9 @@ func findNodesThatFit(pod *api.Pod, machineToPods map[string][]*api.Pod, predica
 		fits := true
 		for name, predicate := range predicateFuncs {
 			predicates.FailedResourceType = ""
+			// TODO:
+			// - return FailedResourceType
+			// - put nodeInfoStore into predicate parameter.
 			fit, err := predicate(pod, machineToPods[node.Name], node.Name)
 			if err != nil {
 				return api.NodeList{}, FailedPredicateMap{}, err
@@ -287,12 +301,14 @@ func EqualPriority(_ *api.Pod, machinesToPods map[string][]*api.Pod, podLister a
 	return result, nil
 }
 
-func NewGenericScheduler(predicates map[string]algorithm.FitPredicate, prioritizers []algorithm.PriorityConfig, extenders []algorithm.SchedulerExtender, pods algorithm.PodLister, random *rand.Rand) algorithm.ScheduleAlgorithm {
+func NewGenericScheduler(predicates map[string]algorithm.FitPredicate, prioritizers []algorithm.PriorityConfig, extenders []algorithm.SchedulerExtender,
+	pods algorithm.PodLister, nodeInfoStore nodeinfo.Store, random *rand.Rand) algorithm.ScheduleAlgorithm {
 	return &genericScheduler{
-		predicates:   predicates,
-		prioritizers: prioritizers,
-		extenders:    extenders,
-		pods:         pods,
-		random:       random,
+		predicates:    predicates,
+		prioritizers:  prioritizers,
+		extenders:     extenders,
+		pods:          pods,
+		random:        random,
+		nodeInfoStore: nodeInfoStore,
 	}
 }
