@@ -27,6 +27,7 @@ import (
 	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/plugin/pkg/scheduler/algorithm"
 	"k8s.io/kubernetes/plugin/pkg/scheduler/metrics"
+	"k8s.io/kubernetes/plugin/pkg/scheduler/schedulercache"
 
 	"github.com/golang/glog"
 )
@@ -71,10 +72,11 @@ type Scheduler struct {
 type Config struct {
 	// It is expected that changes made via modeler will be observed
 	// by NodeLister and Algorithm.
-	Modeler    SystemModeler
-	NodeLister algorithm.NodeLister
-	Algorithm  algorithm.ScheduleAlgorithm
-	Binder     Binder
+	Modeler       SystemModeler
+	nodeInfoCache schedulercache.NodeInfoCache
+	NodeLister    algorithm.NodeLister
+	Algorithm     algorithm.ScheduleAlgorithm
+	Binder        Binder
 
 	// Rate at which we can create pods
 	// If this field is nil, we don't have any rate limit.
@@ -149,14 +151,22 @@ func (s *Scheduler) scheduleOne() {
 	s.config.Modeler.LockedAction(func() {
 		bindingStart := time.Now()
 		err := s.config.Binder.Bind(b)
-		metrics.BindingLatency.Observe(metrics.SinceInMicroseconds(bindingStart))
 		if err != nil {
 			glog.V(1).Infof("Failed to bind pod: %+v", err)
 			s.config.Recorder.Eventf(pod, api.EventTypeNormal, "FailedScheduling", "Binding rejected: %v", err)
 			s.config.Error(pod, err)
 			return
 		}
+		metrics.BindingLatency.Observe(metrics.SinceInMicroseconds(bindingStart))
 		s.config.Recorder.Eventf(pod, api.EventTypeNormal, "Scheduled", "Successfully assigned %v to %v", pod.Name, dest)
+
+		nodeInfoCache := s.config.nodeInfoCache
+		if nodeInfoCache != nil {
+			err := nodeInfoCache.AssumePod(pod)
+			if err != nil {
+				glog.Errorf("Pod should have object meta!")
+			}
+		}
 		// tell the model to assume that this binding took effect.
 		assumed := *pod
 		assumed.Spec.NodeName = dest

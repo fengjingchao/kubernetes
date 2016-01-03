@@ -39,6 +39,8 @@ import (
 	"k8s.io/kubernetes/plugin/pkg/scheduler/algorithm/predicates"
 	schedulerapi "k8s.io/kubernetes/plugin/pkg/scheduler/api"
 	"k8s.io/kubernetes/plugin/pkg/scheduler/api/validation"
+	"k8s.io/kubernetes/plugin/pkg/scheduler/schedulercache"
+	"k8s.io/kubernetes/plugin/pkg/scheduler/schedulercache/nodeinfocache"
 
 	"github.com/golang/glog"
 )
@@ -79,10 +81,14 @@ type ConfigFactory struct {
 	// processed by this scheduler, based on pods's annotation key:
 	// 'scheduler.alpha.kubernetes.io/name'
 	SchedulerName string
+
+	nodeInfoCache schedulercache.NodeInfoCache
 }
 
 // Initializes the factory.
 func NewConfigFactory(client *client.Client, rateLimiter util.RateLimiter, schedulerName string) *ConfigFactory {
+	stopEverything := make(chan struct{})
+	nodeInfoCache := nodeinfocache.New(cache.MetaNamespaceKeyFunc, 30*time.Second, 3*time.Second, stopEverything)
 	c := &ConfigFactory{
 		Client:             client,
 		PodQueue:           cache.NewFIFO(cache.MetaNamespaceKeyFunc),
@@ -93,8 +99,9 @@ func NewConfigFactory(client *client.Client, rateLimiter util.RateLimiter, sched
 		PVCLister:        &cache.StoreToPVCFetcher{Store: cache.NewStore(cache.MetaNamespaceKeyFunc)},
 		ServiceLister:    &cache.StoreToServiceLister{Store: cache.NewStore(cache.MetaNamespaceKeyFunc)},
 		ControllerLister: &cache.StoreToReplicationControllerLister{Store: cache.NewStore(cache.MetaNamespaceKeyFunc)},
-		StopEverything:   make(chan struct{}),
 		SchedulerName:    schedulerName,
+		StopEverything:   stopEverything,
+		nodeInfoCache:    nodeInfoCache,
 	}
 	modeler := scheduler.NewSimpleModeler(&cache.StoreToPodLister{Store: c.PodQueue}, c.ScheduledPodLister)
 	c.modeler = modeler
@@ -114,18 +121,36 @@ func NewConfigFactory(client *client.Client, rateLimiter util.RateLimiter, sched
 				if pod, ok := obj.(*api.Pod); ok {
 					c.modeler.LockedAction(func() {
 						c.modeler.ForgetPod(pod)
+
+						//						err := nodeInfoCache.AddPod(pod)
+						//						if err != nil {
+						//							glog.Errorf("nodeInfoStore.ConfirmPodScheduled failed: %v", err)
+						//						}
 					})
+
 				}
 			},
+			// TODO: updateFunc
 			DeleteFunc: func(obj interface{}) {
 				c.modeler.LockedAction(func() {
 					switch t := obj.(type) {
 					case *api.Pod:
 						c.modeler.ForgetPod(t)
+
+						err := nodeInfoCache.RemovePod(t)
+						if err != nil {
+							glog.Errorf("nodeInfoStore.RemovePod failed: %v", err)
+						}
 					case cache.DeletedFinalStateUnknown:
 						c.modeler.ForgetPodByKey(t.Key)
+						err := nodeInfoCache.RemovePodByKey(t.Key)
+						if err != nil {
+							glog.Errorf("nodeInfoStore.RemovePodByKey failed: %v", err)
+						}
 					}
+
 				})
+
 			},
 		},
 	)
