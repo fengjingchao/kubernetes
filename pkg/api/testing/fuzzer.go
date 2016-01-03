@@ -25,8 +25,8 @@ import (
 
 	docker "github.com/fsouza/go-dockerclient"
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/registered"
 	"k8s.io/kubernetes/pkg/api/resource"
+	"k8s.io/kubernetes/pkg/api/testapi"
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/pkg/fields"
@@ -39,7 +39,7 @@ import (
 )
 
 // FuzzerFor can randomly populate api objects that are destined for version.
-func FuzzerFor(t *testing.T, version string, src rand.Source) *fuzz.Fuzzer {
+func FuzzerFor(t *testing.T, version unversioned.GroupVersion, src rand.Source) *fuzz.Fuzzer {
 	f := fuzz.New().NilChance(.5).NumElements(1, 1)
 	if src != nil {
 		f.RandSource(src)
@@ -311,7 +311,10 @@ func FuzzerFor(t *testing.T, version string, src rand.Source) *fuzz.Fuzzer {
 				ev.ValueFrom = &api.EnvVarSource{}
 				ev.ValueFrom.FieldRef = &api.ObjectFieldSelector{}
 
-				versions := registered.RegisteredGroupVersions
+				var versions []unversioned.GroupVersion
+				for _, testGroup := range testapi.Groups {
+					versions = append(versions, *testGroup.GroupVersion())
+				}
 
 				ev.ValueFrom.FieldRef.APIVersion = versions[c.Rand.Intn(len(versions))].String()
 				ev.ValueFrom.FieldRef.FieldPath = c.RandString()

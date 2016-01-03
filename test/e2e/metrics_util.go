@@ -21,9 +21,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
-	"net/http"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,6 +44,48 @@ const (
 	apiCallLatencySmallThreshold  time.Duration = 500 * time.Millisecond
 	apiCallLatencyMediumThreshold time.Duration = 500 * time.Millisecond
 	apiCallLatencyLargeThreshold  time.Duration = 1 * time.Second
+)
+
+var InterestingApiServerMetrics = sets.NewString(
+	"apiserver_request_count",
+	"apiserver_request_latencies_bucket",
+	"etcd_helper_cache_entry_count",
+	"etcd_helper_cache_hit_count",
+	"etcd_helper_cache_miss_count",
+	"etcd_request_cache_add_latencies_summary",
+	"etcd_request_cache_get_latencies_summary",
+	"etcd_request_latencies_summary",
+	"go_gc_duration_seconds",
+	"go_goroutines",
+	"process_cpu_seconds_total",
+	"process_open_fds",
+	"process_resident_memory_bytes",
+	"process_start_time_seconds",
+	"process_virtual_memory_bytes",
+)
+
+var InterestingKubeletMetrics = sets.NewString(
+	"container_cpu_system_seconds_total",
+	"container_cpu_user_seconds_total",
+	"container_fs_io_time_weighted_seconds_total",
+	"container_memory_usage_bytes",
+	"container_spec_cpu_shares",
+	"container_start_time_seconds",
+	"go_gc_duration_seconds",
+	"go_goroutines",
+	"kubelet_container_manager_latency_microseconds",
+	"kubelet_docker_errors",
+	"kubelet_docker_operations_latency_microseconds",
+	"kubelet_generate_pod_status_latency_microseconds",
+	"kubelet_pod_start_latency_microseconds",
+	"kubelet_pod_worker_latency_microseconds",
+	"kubelet_pod_worker_start_latency_microseconds",
+	"kubelet_sync_pods_latency_microseconds",
+	"process_cpu_seconds_total",
+	"process_open_fds",
+	"process_resident_memory_bytes",
+	"process_start_time_seconds",
+	"process_virtual_memory_bytes",
 )
 
 // Dashboard metrics
@@ -343,72 +382,6 @@ func prettyPrintJSON(metrics interface{}) string {
 		return ""
 	}
 	return string(formatted.Bytes())
-}
-
-// Retrieves debug information.
-func getDebugInfo(c *client.Client) (map[string]string, error) {
-	data := make(map[string]string)
-	for _, key := range []string{"block", "goroutine", "heap", "threadcreate"} {
-		resp, err := http.Get(c.Get().AbsPath(fmt.Sprintf("debug/pprof/%s", key)).URL().String() + "?debug=2")
-		if err != nil {
-			Logf("Warning: Error trying to fetch %s debug data: %v", key, err)
-			continue
-		}
-		body, err := ioutil.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			Logf("Warning: Error trying to read %s debug data: %v", key, err)
-		}
-		data[key] = string(body)
-	}
-	return data, nil
-}
-
-func writePerfData(c *client.Client, dirName string, postfix string) error {
-	fname := fmt.Sprintf("%s/metrics_%s.txt", dirName, postfix)
-
-	handler, err := os.Create(fname)
-	if err != nil {
-		return fmt.Errorf("Error creating file '%s': %v", fname, err)
-	}
-
-	metrics, err := getMetrics(c)
-	if err != nil {
-		return fmt.Errorf("Error retrieving metrics: %v", err)
-	}
-
-	_, err = handler.WriteString(metrics)
-	if err != nil {
-		return fmt.Errorf("Error writing metrics: %v", err)
-	}
-
-	err = handler.Close()
-	if err != nil {
-		return fmt.Errorf("Error closing '%s': %v", fname, err)
-	}
-
-	debug, err := getDebugInfo(c)
-	if err != nil {
-		return fmt.Errorf("Error retrieving debug information: %v", err)
-	}
-
-	for key, value := range debug {
-		fname := fmt.Sprintf("%s/%s_%s.txt", dirName, key, postfix)
-		handler, err = os.Create(fname)
-		if err != nil {
-			return fmt.Errorf("Error creating file '%s': %v", fname, err)
-		}
-		_, err = handler.WriteString(value)
-		if err != nil {
-			return fmt.Errorf("Error writing %s: %v", key, err)
-		}
-
-		err = handler.Close()
-		if err != nil {
-			return fmt.Errorf("Error closing '%s': %v", fname, err)
-		}
-	}
-	return nil
 }
 
 // extractMetricSamples parses the prometheus metric samples from the input string.

@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -90,23 +90,11 @@ func (c *testTypes) Delete(name string, options *api.DeleteOptions) error {
 
 // DeleteCollection deletes a collection of objects.
 func (c *testTypes) DeleteCollection(options *api.DeleteOptions, listOptions api.ListOptions) error {
-	if options == nil {
-		return c.client.Delete().
-			NamespaceIfScoped(c.ns, len(c.ns) > 0).
-			Resource("testTypes").
-			VersionedParams(&listOptions, api.Scheme).
-			Do().
-			Error()
-	}
-	body, err := api.Scheme.EncodeToVersion(options, c.client.APIVersion().String())
-	if err != nil {
-		return err
-	}
 	return c.client.Delete().
 		NamespaceIfScoped(c.ns, len(c.ns) > 0).
 		Resource("testTypes").
 		VersionedParams(&listOptions, api.Scheme).
-		Body(body).
+		Body(options).
 		Do().
 		Error()
 }

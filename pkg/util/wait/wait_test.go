@@ -84,7 +84,7 @@ func TestPoll(t *testing.T) {
 		return true, nil
 	})
 	fp := fakePoller{max: 1}
-	if err := pollInternal(fp.GetWaitFunc(time.Microsecond, time.Microsecond), f); err != nil {
+	if err := pollInternal(fp.GetWaitFunc(time.Microsecond, time.Second), f); err != nil {
 		t.Fatalf("unexpected error %v", err)
 	}
 	if invocations != 1 {
@@ -94,19 +94,18 @@ func TestPoll(t *testing.T) {
 	if used != 1 {
 		t.Errorf("Expected exactly one tick, got %d", used)
 	}
+}
 
+func TestPollError(t *testing.T) {
 	expectedError := errors.New("Expected error")
-	f = ConditionFunc(func() (bool, error) {
+	f := ConditionFunc(func() (bool, error) {
 		return false, expectedError
 	})
-	fp = fakePoller{max: 1}
-	if err := pollInternal(fp.GetWaitFunc(time.Microsecond, time.Microsecond), f); err == nil || err != expectedError {
+	fp := fakePoller{max: 1}
+	if err := pollInternal(fp.GetWaitFunc(time.Microsecond, time.Second), f); err == nil || err != expectedError {
 		t.Fatalf("Expected error %v, got none %v", expectedError, err)
 	}
-	if invocations != 1 {
-		t.Errorf("Expected exactly one invocation, got %d", invocations)
-	}
-	used = atomic.LoadInt32(&fp.used)
+	used := atomic.LoadInt32(&fp.used)
 	if used != 1 {
 		t.Errorf("Expected exactly one tick, got %d", used)
 	}
@@ -185,13 +184,12 @@ func TestPollForever(t *testing.T) {
 		}
 	}
 
-	// at most two poll notifications should be sent once we return from the condition
+	// at most one poll notification should be sent once we return from the condition
 	done <- struct{}{}
 	go func() {
 		for i := 0; i < 2; i++ {
 			_, open := <-ch
-			if open {
-				<-complete
+			if !open {
 				return
 			}
 		}

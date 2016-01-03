@@ -26,6 +26,7 @@ import (
 	"k8s.io/kubernetes/pkg/api"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/fields"
+	"k8s.io/kubernetes/pkg/metrics"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -49,6 +50,11 @@ type Framework struct {
 	logsSizeWaitGroup    sync.WaitGroup
 	logsSizeCloseChannel chan bool
 	logsSizeVerifier     *LogsSizeVerifier
+}
+
+type TestDataSummary interface {
+	PrintHumanReadable() string
+	PrintJSON() string
 }
 
 // NewFramework makes a new framework and sets up a BeforeEach/AfterEach for
@@ -90,7 +96,7 @@ func (f *Framework) beforeEach() {
 	}
 
 	if testContext.GatherKubeSystemResourceUsageData {
-		f.gatherer.startGatheringData(c, time.Minute)
+		f.gatherer.startGatheringData(c, resourceDataGatheringPeriodSeconds*time.Second)
 	}
 
 	if testContext.GatherLogsSizes {
@@ -144,14 +150,64 @@ func (f *Framework) afterEach() {
 		Logf("Found DeleteNamespace=false, skipping namespace deletion!")
 	}
 
+	summaries := make([]TestDataSummary, 0)
 	if testContext.GatherKubeSystemResourceUsageData {
-		f.gatherer.stopAndPrintData([]int{50, 90, 99, 100}, f.addonResourceConstraints)
+		summaries = append(summaries, f.gatherer.stopAndSummarize([]int{50, 90, 99, 100}, f.addonResourceConstraints))
 	}
 
 	if testContext.GatherLogsSizes {
 		close(f.logsSizeCloseChannel)
 		f.logsSizeWaitGroup.Wait()
+		summaries = append(summaries, f.logsSizeVerifier.GetSummary())
 	}
+
+	outputTypes := strings.Split(testContext.OutputPrintType, ",")
+	for _, printType := range outputTypes {
+		switch printType {
+		case "hr":
+			for i := range summaries {
+				Logf(summaries[i].PrintHumanReadable())
+			}
+		case "json":
+			for i := range summaries {
+				Logf(summaries[i].PrintJSON())
+			}
+		default:
+			Logf("Unknown ouptut type: %v. Skipping.", printType)
+		}
+	}
+
+	if testContext.GatherMetricsAfterTest {
+		// TODO: enable Scheduler and ControllerManager metrics grabbing when Master's Kubelet will be registered.
+		grabber, err := metrics.NewMetricsGrabber(f.Client, true, false, false, true)
+		if err != nil {
+			Logf("Failed to create MetricsGrabber. Skipping metrics gathering.")
+		} else {
+			received, err := grabber.Grab(nil)
+			if err != nil {
+				Logf("MetricsGrabber failed grab metrics. Skipping metrics gathering.")
+			} else {
+				buf := bytes.Buffer{}
+				for interestingMetric := range InterestingApiServerMetrics {
+					buf.WriteString(fmt.Sprintf("For %v:\n", interestingMetric))
+					for _, sample := range received.ApiServerMetrics[interestingMetric] {
+						buf.WriteString(fmt.Sprintf("\t%v\n", metrics.PrintSample(sample)))
+					}
+				}
+				for kubelet, grabbed := range received.KubeletMetrics {
+					buf.WriteString(fmt.Sprintf("For %v:\n", kubelet))
+					for interestingMetric := range InterestingKubeletMetrics {
+						buf.WriteString(fmt.Sprintf("\tFor %v:\n", interestingMetric))
+						for _, sample := range grabbed[interestingMetric] {
+							buf.WriteString(fmt.Sprintf("\t\t%v\n", metrics.PrintSample(sample)))
+						}
+					}
+				}
+				Logf("%v", buf.String())
+			}
+		}
+	}
+
 	// Paranoia-- prevent reuse!
 	f.Namespace = nil
 	f.Client = nil
