@@ -72,7 +72,6 @@ type ConfigFactory struct {
 	StopEverything chan struct{}
 
 	scheduledPodPopulator *framework.Controller
-	modeler               scheduler.SystemModeler
 	schedulerCache        schedulercache.Cache
 
 	// SchedulerName of a scheduler is used to select which pods will be
@@ -97,8 +96,7 @@ func NewConfigFactory(client *client.Client, schedulerName string) *ConfigFactor
 		SchedulerName:    schedulerName,
 	}
 	modeler := scheduler.NewSimpleModeler(&cache.StoreToPodLister{Store: c.PodQueue}, c.ScheduledPodLister)
-	c.modeler = modeler
-	schedulerCache := schedulercache.New(modeler.PodLister())
+	schedulerCache := schedulercache.New(modeler.PodLister(), modeler)
 	c.schedulerCache = schedulerCache
 
 	c.PodLister = schedulerCache
@@ -113,21 +111,47 @@ func NewConfigFactory(client *client.Client, schedulerName string) *ConfigFactor
 		0,
 		framework.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				if pod, ok := obj.(*api.Pod); ok {
-					c.modeler.LockedAction(func() {
-						c.modeler.ForgetPod(pod)
-					})
+				pod, ok := obj.(*api.Pod)
+				if !ok {
+					panic("cannot convert to *api.Pod")
+				}
+				err := schedulerCache.AddPod(pod)
+				if err != nil {
+					glog.Errorf("scheduler cache AddPod failed: %v", err)
+				}
+			},
+			UpdateFunc: func(oldObj, newObj interface{}) {
+				oldPod, ok := oldObj.(*api.Pod)
+				if !ok {
+					panic("cannot convert to *api.Pod")
+				}
+				newPod, ok := newObj.(*api.Pod)
+				if !ok {
+					panic("cannot convert to *api.Pod")
+				}
+				err := schedulerCache.UpdatePod(oldPod, newPod)
+				if err != nil {
+					glog.Errorf("scheduler cache UpdatePod failed: %v", err)
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
-				c.modeler.LockedAction(func() {
-					switch t := obj.(type) {
-					case *api.Pod:
-						c.modeler.ForgetPod(t)
-					case cache.DeletedFinalStateUnknown:
-						c.modeler.ForgetPodByKey(t.Key)
+				var pod *api.Pod
+				switch t := obj.(type) {
+				case *api.Pod:
+					pod = t
+				case cache.DeletedFinalStateUnknown:
+					var ok bool
+					pod, ok = t.Obj.(*api.Pod)
+					if !ok {
+						panic("cannot convert to *api.Pod")
 					}
-				})
+				default:
+					panic("cannot convert to *api.Pod")
+				}
+				err := schedulerCache.RemovePod(pod)
+				if err != nil {
+					glog.Errorf("scheduler cache RemovePod failed: %v", err)
+				}
 			},
 		},
 	)
@@ -247,7 +271,7 @@ func (f *ConfigFactory) CreateFromKeys(predicateKeys, priorityKeys sets.String, 
 	}
 
 	return &scheduler.Config{
-		Modeler: f.modeler,
+		SchedulerCache: f.schedulerCache,
 		// The scheduler only needs to consider schedulable nodes.
 		NodeLister: f.NodeLister.NodeCondition(getNodeConditionPredicate()),
 		Algorithm:  algo,
