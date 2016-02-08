@@ -442,11 +442,11 @@ func (r *ResourceFit) PodFitsResources(pod *api.Pod, node string, nodeInfo *sche
 
 	totalMilliCPU := allocatable.Cpu().MilliValue()
 	totalMemory := allocatable.Memory().Value()
-	if totalMilliCPU != 0 && totalMilliCPU < podRequest.milliCPU+nodeInfo.RequestedResource().MilliCPU {
+	if totalMilliCPU < podRequest.milliCPU+nodeInfo.RequestedResource().MilliCPU {
 		return false,
 			newInsufficientResourceError(cpuResourceName, podRequest.milliCPU, nodeInfo.RequestedResource().MilliCPU, totalMilliCPU)
 	}
-	if totalMemory != 0 && totalMemory < podRequest.memory+nodeInfo.RequestedResource().Memory {
+	if totalMemory < podRequest.memory+nodeInfo.RequestedResource().Memory {
 		return false,
 			newInsufficientResourceError(memoryResoureceName, podRequest.memory, nodeInfo.RequestedResource().Memory, totalMemory)
 	}
