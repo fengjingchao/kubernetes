@@ -26,12 +26,14 @@ var emptyResource = Resource{}
 
 // NodeInfo is node level aggregated information.
 type NodeInfo struct {
-	// Total requested resource of all pods (including assumed ones) on this node
+	// Total requested resource of all pods on this node.
+	// It includes assumed pods which scheduler sends binding to apiserver but
+	// didn't get it as scheduled yet.
 	requestedResource *Resource
 	pods              []*api.Pod
 }
 
-// Resource is a collection of compute resource
+// Resource is a collection of compute resource.
 type Resource struct {
 	MilliCPU int64
 	Memory   int64
@@ -50,7 +52,7 @@ func NewNodeInfo(pods ...*api.Pod) *NodeInfo {
 	return ni
 }
 
-// Pods return all pods scheduled (including assumed to be) on this node
+// Pods return all pods scheduled (including assumed to be) on this node.
 func (n *NodeInfo) Pods() []*api.Pod {
 	if n == nil {
 		return nil
@@ -58,7 +60,7 @@ func (n *NodeInfo) Pods() []*api.Pod {
 	return n.pods
 }
 
-// RequestedResource returns aggregated resource request of pods on this node
+// RequestedResource returns aggregated resource request of pods on this node.
 func (n *NodeInfo) RequestedResource() Resource {
 	if n == nil {
 		return emptyResource
@@ -75,7 +77,7 @@ func (n *NodeInfo) String() string {
 	return fmt.Sprintf("&NodeInfo{Pods:%v, RequestedResource:%#v}", podKeys, n.requestedResource)
 }
 
-// AddPod adds pod information to this NodeInfo.
+// addPod adds pod information to this NodeInfo.
 func (n *NodeInfo) addPod(pod *api.Pod) {
 	cpu, mem := calculateResource(pod)
 	n.requestedResource.MilliCPU += cpu
