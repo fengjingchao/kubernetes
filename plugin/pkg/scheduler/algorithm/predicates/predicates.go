@@ -298,13 +298,13 @@ func NewVolumeZonePredicate(nodeInfo NodeInfo, pvInfo PersistentVolumeInfo, pvcI
 	return c.predicate
 }
 
-func (c *VolumeZoneChecker) predicate(pod *api.Pod, nodeID string, nodeInfo *schedulercache.NodeInfo) (bool, error) {
-	node, err := c.nodeInfo.GetNodeInfo(nodeID)
+func (c *VolumeZoneChecker) predicate(pod *api.Pod, nodeName string, nodeInfo *schedulercache.NodeInfo) (bool, error) {
+	node, err := c.nodeInfo.GetNodeInfo(nodeName)
 	if err != nil {
 		return false, err
 	}
 	if node == nil {
-		return false, fmt.Errorf("node not found: %q", nodeID)
+		return false, fmt.Errorf("node not found: %q", nodeName)
 	}
 
 	nodeConstraints := make(map[string]string)
@@ -361,7 +361,7 @@ func (c *VolumeZoneChecker) predicate(pod *api.Pod, nodeID string, nodeInfo *sch
 				}
 				nodeV, _ := nodeConstraints[k]
 				if v != nodeV {
-					glog.V(2).Infof("Won't schedule pod %q onto node %q due to volume %q (mismatch on %q)", pod.Name, nodeID, pvName, k)
+					glog.V(2).Infof("Won't schedule pod %q onto node %q due to volume %q (mismatch on %q)", pod.Name, nodeName, pvName, k)
 					return false, nil
 				}
 			}
@@ -422,8 +422,8 @@ func podName(pod *api.Pod) string {
 }
 
 // PodFitsResources calculates fit based on requested, rather than used resources
-func (r *ResourceFit) PodFitsResources(pod *api.Pod, node string, nodeInfo *schedulercache.NodeInfo) (bool, error) {
-	info, err := r.info.GetNodeInfo(node)
+func (r *ResourceFit) PodFitsResources(pod *api.Pod, nodeName string, nodeInfo *schedulercache.NodeInfo) (bool, error) {
+	info, err := r.info.GetNodeInfo(nodeName)
 	if err != nil {
 		return false, err
 	}
@@ -451,7 +451,7 @@ func (r *ResourceFit) PodFitsResources(pod *api.Pod, node string, nodeInfo *sche
 			newInsufficientResourceError(memoryResoureceName, podRequest.memory, nodeInfo.RequestedResource().Memory, totalMemory)
 	}
 	glog.V(10).Infof("Schedule Pod %+v on Node %+v is allowed, Node is running only %v out of %v Pods.",
-		podName(pod), node, len(nodeInfo.Pods()), allowedPodNumber)
+		podName(pod), nodeName, len(nodeInfo.Pods()), allowedPodNumber)
 	return true, nil
 }
 
@@ -539,8 +539,8 @@ type NodeSelector struct {
 	info NodeInfo
 }
 
-func (n *NodeSelector) PodSelectorMatches(pod *api.Pod, nodeID string, nodeInfo *schedulercache.NodeInfo) (bool, error) {
-	node, err := n.info.GetNodeInfo(nodeID)
+func (n *NodeSelector) PodSelectorMatches(pod *api.Pod, nodeName string, nodeInfo *schedulercache.NodeInfo) (bool, error) {
+	node, err := n.info.GetNodeInfo(nodeName)
 	if err != nil {
 		return false, err
 	}
@@ -581,9 +581,9 @@ func NewNodeLabelPredicate(info NodeInfo, labels []string, presence bool) algori
 // Alternately, eliminating nodes that have a certain label, regardless of value, is also useful
 // A node may have a label with "retiring" as key and the date as the value
 // and it may be desirable to avoid scheduling new pods on this node
-func (n *NodeLabelChecker) CheckNodeLabelPresence(pod *api.Pod, nodeID string, nodeInfo *schedulercache.NodeInfo) (bool, error) {
+func (n *NodeLabelChecker) CheckNodeLabelPresence(pod *api.Pod, nodeName string, nodeInfo *schedulercache.NodeInfo) (bool, error) {
 	var exists bool
-	node, err := n.info.GetNodeInfo(nodeID)
+	node, err := n.info.GetNodeInfo(nodeName)
 	if err != nil {
 		return false, err
 	}
@@ -623,7 +623,7 @@ func NewServiceAffinityPredicate(podLister algorithm.PodLister, serviceLister al
 // - L is listed in the ServiceAffinity object that is passed into the function
 // - the pod does not have any NodeSelector for L
 // - some other pod from the same service is already scheduled onto a node that has value V for label L
-func (s *ServiceAffinity) CheckServiceAffinity(pod *api.Pod, nodeID string, nodeInfo *schedulercache.NodeInfo) (bool, error) {
+func (s *ServiceAffinity) CheckServiceAffinity(pod *api.Pod, nodeName string, nodeInfo *schedulercache.NodeInfo) (bool, error) {
 	var affinitySelector labels.Selector
 
 	// check if the pod being scheduled has the affinity labels specified in its NodeSelector
@@ -683,7 +683,7 @@ func (s *ServiceAffinity) CheckServiceAffinity(pod *api.Pod, nodeID string, node
 		affinitySelector = labels.Set(affinityLabels).AsSelector()
 	}
 
-	node, err := s.nodeInfo.GetNodeInfo(nodeID)
+	node, err := s.nodeInfo.GetNodeInfo(nodeName)
 	if err != nil {
 		return false, err
 	}

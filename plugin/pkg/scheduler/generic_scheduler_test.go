@@ -38,8 +38,8 @@ func truePredicate(pod *api.Pod, nodeName string, nodeInfo *schedulercache.NodeI
 	return true, nil
 }
 
-func matchesPredicate(pod *api.Pod, node string, nodeInfo *schedulercache.NodeInfo) (bool, error) {
-	return pod.Name == node, nil
+func matchesPredicate(pod *api.Pod, nodeName string, nodeInfo *schedulercache.NodeInfo) (bool, error) {
+	return pod.Name == nodeName, nil
 }
 
 func hasNoPodsPredicate(pod *api.Pod, nodeName string, nodeInfo *schedulercache.NodeInfo) (bool, error) {
