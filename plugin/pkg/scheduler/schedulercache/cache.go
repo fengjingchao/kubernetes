@@ -85,7 +85,7 @@ func (cache *schedulerCache) GetNodeNameToInfoMap() map[string]*NodeInfo {
 	return nodeNameToInfo
 }
 
-func (cache *schedulerCache) List(selector labels.Selector) []*api.Pod {
+func (cache *schedulerCache) List(selector labels.Selector) ([]*api.Pod, error) {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
@@ -93,7 +93,7 @@ func (cache *schedulerCache) List(selector labels.Selector) []*api.Pod {
 	for _, info := range cache.nodes {
 		pods = append(pods, info.pods...)
 	}
-	return pods
+	return pods, nil
 }
 
 func (cache *schedulerCache) AssumePodIfBindSucceed(pod *api.Pod, bind func() bool) error {
