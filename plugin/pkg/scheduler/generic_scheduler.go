@@ -75,7 +75,10 @@ func (g *genericScheduler) Schedule(pod *api.Pod, nodeLister algorithm.NodeListe
 	}
 
 	// Get once as a snapshot and used for all fit and priority funcs.
-	nodeNameToInfo := g.cache.GetNodeNameToInfoMap()
+	nodeNameToInfo, err := g.cache.GetNodeNameToInfoMap()
+	if err != nil {
+		return "", err
+	}
 	filteredNodes, failedPredicateMap, err := findNodesThatFit(pod, nodeNameToInfo, g.predicates, nodes, g.extenders)
 	if err != nil {
 		return "", err

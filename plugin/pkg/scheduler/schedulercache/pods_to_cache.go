@@ -37,8 +37,8 @@ func (p PodsToCache) UpdatePod(oldPod, newPod *api.Pod) error { return nil }
 
 func (p PodsToCache) RemovePod(pod *api.Pod) error { return nil }
 
-func (p PodsToCache) GetNodeNameToInfoMap() map[string]*NodeInfo {
-	return CreateNodeNameToInfoMap(p)
+func (p PodsToCache) GetNodeNameToInfoMap() (map[string]*NodeInfo, error) {
+	return CreateNodeNameToInfoMap(p), nil
 }
 
 func (p PodsToCache) List(s labels.Selector) (selected []*api.Pod, err error) {

@@ -75,14 +75,14 @@ func newSchedulerCache(ttl, period time.Duration, stop chan struct{}) *scheduler
 	}
 }
 
-func (cache *schedulerCache) GetNodeNameToInfoMap() map[string]*NodeInfo {
+func (cache *schedulerCache) GetNodeNameToInfoMap() (map[string]*NodeInfo, error) {
 	nodeNameToInfo := make(map[string]*NodeInfo)
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	for name, info := range cache.nodes {
 		nodeNameToInfo[name] = info.Clone()
 	}
-	return nodeNameToInfo
+	return nodeNameToInfo, nil
 }
 
 func (cache *schedulerCache) List(selector labels.Selector) ([]*api.Pod, error) {

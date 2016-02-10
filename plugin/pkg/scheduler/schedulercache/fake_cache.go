@@ -40,6 +40,6 @@ func (f *FakeCache) UpdatePod(oldPod, newPod *api.Pod) error { return nil }
 
 func (f *FakeCache) RemovePod(pod *api.Pod) error { return nil }
 
-func (f *FakeCache) GetNodeNameToInfoMap() map[string]*NodeInfo { return nil }
+func (f *FakeCache) GetNodeNameToInfoMap() (map[string]*NodeInfo, error) { return nil, nil }
 
 func (f *FakeCache) List(s labels.Selector) ([]*api.Pod, error) { return nil, nil }
