@@ -16,22 +16,6 @@
 
 # TODO: figure out how to get etcd tag from some real configuration and put it here.
 
-EVENT_STORE_IP=$1
-EVENT_STORE_URL="http://${EVENT_STORE_IP}:4002"
-if [ "${EVENT_STORE_IP}" == "127.0.0.1" ]; then
-	sudo docker run --net=host -d gcr.io/google_containers/etcd:2.2.1 /usr/local/bin/etcd \
-		--listen-peer-urls http://127.0.0.1:2381 \
-		--addr=127.0.0.1:4002 \
-		--bind-addr=0.0.0.0:4002 \
-		--data-dir=/var/etcd/data
-fi
-
-sudo docker run --net=host -d gcr.io/google_containers/etcd:2.2.1 /usr/local/bin/etcd \
-	--listen-peer-urls http://127.0.0.1:2380 \
-	--addr=127.0.0.1:4001 \
-	--bind-addr=0.0.0.0:4001 \
-	--data-dir=/var/etcd/data
-
 # Increase the allowed number of open file descriptors
 ulimit -n 65536
 
@@ -42,8 +26,8 @@ kubernetes/server/bin/kube-scheduler --master=127.0.0.1:8080 --v=2 &> /var/log/k
 kubernetes/server/bin/kube-apiserver \
 	--portal-net=10.0.0.1/24 \
 	--address=0.0.0.0 \
-	--etcd-servers=http://127.0.0.1:4001 \
-	--etcd-servers-overrides=/events#${EVENT_STORE_URL} \
+	--etcd-servers=etcdv3-single:4001 \
+	--etcd-servers-overrides=/events#etcdv3-single-event:4001 \
 	--v=4 \
 	--tls-cert-file=/srv/kubernetes/server.cert \
 	--tls-private-key-file=/srv/kubernetes/server.key \
