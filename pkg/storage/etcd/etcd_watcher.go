@@ -398,7 +398,9 @@ func (w *etcdWatcher) sendModify(res *etcd.Response) {
 	var oldObj runtime.Object
 	if res.PrevNode != nil && res.PrevNode.Value != "" {
 		// Ignore problems reading the old object.
-		if oldObj, err = w.decodeObject(res.PrevNode); err == nil {
+		node := *res.PrevNode
+		node.ModifiedIndex = res.Node.ModifiedIndex
+		if oldObj, err = w.decodeObject(&node); err == nil {
 			oldObjPasses = w.filter(oldObj)
 		}
 	}
