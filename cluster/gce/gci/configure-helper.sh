@@ -480,6 +480,7 @@ function start-kube-apiserver {
   params+=" --basic-auth-file=/etc/srv/kubernetes/basic_auth.csv"
   params+=" --cloud-provider=gce"
   params+=" --client-ca-file=/etc/srv/kubernetes/ca.crt"
+  params+=" --storage-backend=etcd3"
   params+=" --etcd-servers=http://127.0.0.1:4001"
   params+=" --etcd-servers-overrides=/events#http://127.0.0.1:4002"
   params+=" --secure-port=443"
