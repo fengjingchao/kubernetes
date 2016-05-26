@@ -10,7 +10,7 @@
 "containers":[
     {
     "name": "etcd-container",
-    "image": "gcr.io/google_containers/etcd:2.2.1",
+    "image": "gcr.io/coreos-k8s-scale-testing/etcd-amd64:3.0.0-beta.0",
     "resources": {
       "requests": {
         "cpu": {{ cpulimit }}
