@@ -38,7 +38,8 @@ type SharedInformer interface {
 	// The handler can be blocking. SharedInformer is responsible for queuing events underlying for each handler.
 	AddEventHandler(handler ResourceEventHandler) error
 	GetStore() cache.Store
-	// GetController gives back a synthetic interface that "votes" to start the informer
+	// GetController gives back a synthetic interface.
+	// TODO: We should clean up those legacy controllers instead of returning a fake one in interface.
 	GetController() ControllerInterface
 	Run(stopCh <-chan struct{})
 	HasSynced() bool
@@ -95,7 +96,7 @@ func (s *sharedInformer) GetController() ControllerInterface {
 }
 
 // dummyController hides the fact that a SharedInformer is different from a dedicated one
-// where a caller can `Run`.  The run method is disonnected in this case, because higher
+// where a caller can `Run`.  The run method is disconnected in this case, because higher
 // level logic will decide when to start the SharedInformer and related controller.
 // Because returning information back is always asynchronous, the legacy callers shouldn't
 // notice any change in behavior.
