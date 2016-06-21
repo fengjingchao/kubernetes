@@ -17,55 +17,39 @@ limitations under the License.
 package framework
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
+	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/client/cache"
 	"k8s.io/kubernetes/pkg/runtime"
 	utilruntime "k8s.io/kubernetes/pkg/util/runtime"
+	"k8s.io/kubernetes/pkg/util/sets"
 	"k8s.io/kubernetes/pkg/util/wait"
+
+	"github.com/golang/glog"
 )
 
-// Config contains all the settings for a Controller.
-type Config struct {
-	// The queue for your objects; either a cache.FIFO or
-	// a cache.DeltaFIFO. Your Process() function should accept
-	// the output of this Oueue's Pop() method.
-	cache.Queue
-
-	// Something that can list and watch your objects.
-	cache.ListerWatcher
-
-	// Something that can process your objects.
-	Process ProcessFunc
-
-	// The type of your objects.
-	ObjectType runtime.Object
-
-	// Reprocess everything at least this often.
-	// Note that if it takes longer for you to clear the queue than this
-	// period, you will end up processing items in the order determined
-	// by cache.FIFO.Replace(). Currently, this is random. If this is a
-	// problem, we can change that replacement policy to append new
-	// things to the end of the queue instead of replacing the entire
-	// queue.
-	FullResyncPeriod time.Duration
-
-	// If true, when Process() returns an error, re-enqueue the object.
-	// TODO: add interface to let you inject a delay/backoff or drop
-	//       the object completely if desired. Pass the object in
-	//       question to this interface as a parameter.
-	RetryOnError bool
-}
-
-// ProcessFunc processes a single object.
-type ProcessFunc func(obj interface{}) error
-
-// Controller is a generic controller framework.
+// Controller...
 type Controller struct {
-	config         Config
-	reflector      *cache.Reflector
-	reflectorMutex sync.RWMutex
+	// User provided functions to list and watch objects.
+	lw cache.ListerWatcher
+	// Iterate everything again at least this often. Objects will be given at UpdateFunc.
+	resyncPeriod time.Duration
+	// store reflects the latest state of the remote storage.
+	store cache.Indexer
+	// User registered handlers.
+	handlers []ResourceEventHandler
+	// mu protects all internal data structures
+	mu sync.Mutex
+	// populated tells whether the store has been populated with data.
+	populated bool
+	// started tells whether controller has been started.
+	started bool
+	// internal channels.
+	eventChan chan *ctrlEvent
+	queueChan chan *ctrlEvent
 }
 
 // TODO make the "Controller" private, and convert all references to use ControllerInterface instead
@@ -74,64 +58,276 @@ type ControllerInterface interface {
 	HasSynced() bool
 }
 
-// New makes a new Controller from the given Config.
-func New(c *Config) *Controller {
-	ctlr := &Controller{
-		config: *c,
+// New makes a new Controller.
+func New(lw cache.ListerWatcher, resyncPeriod time.Duration, store cache.Indexer) *Controller {
+	return &Controller{
+		lw:           lw,
+		resyncPeriod: resyncPeriod,
+		eventChan:    make(chan *ctrlEvent),
+		queueChan:    make(chan *ctrlEvent),
+		store:        store,
 	}
-	return ctlr
 }
 
-// Run begins processing items, and will continue until a value is sent down stopCh.
+// Run starts controller to keep syncing with remote storage until stopCh returns.
 // It's an error to call Run more than once.
-// Run blocks; call via go.
+// Run blocks.
 func (c *Controller) Run(stopCh <-chan struct{}) {
-	defer utilruntime.HandleCrash()
-	r := cache.NewReflector(
-		c.config.ListerWatcher,
-		c.config.ObjectType,
-		c.config.Queue,
-		c.config.FullResyncPeriod,
-	)
+	c.mu.Lock()
+	c.started = true
+	c.mu.Unlock()
 
-	c.reflectorMutex.Lock()
-	c.reflector = r
-	c.reflectorMutex.Unlock()
+	go wait.Until(func() {
+		if err := c.listWatch(stopCh); err != nil {
+			utilruntime.HandleError(err)
+		}
+		// TODO: Retry policy at relisting?
+	}, time.Second, stopCh)
 
-	r.RunUntil(stopCh)
+	go c.eventQueuing(stopCh)
+	if c.resyncPeriod != 0 {
+		go c.resyncPeriodically(stopCh)
+	}
 
-	wait.Until(c.processLoop, time.Second, stopCh)
+	if err := c.eventProcessing(stopCh); err != nil {
+		// Other option:
+		// - backoff and reprocess it. But on what situations?
+		panic(err)
+	}
+}
+
+// watch ...
+// - never stop watching on client side.
+// - never relist unless version is compacted.
+func (c *Controller) listWatch(stopCh <-chan struct{}) error {
+	watchRev, err := c.listItems(stopCh)
+	if err != nil {
+		return err
+	}
+
+	for {
+		// TODO: retry policy on rewatch?
+		w, err := c.lw.Watch(api.ListOptions{ResourceVersion: watchRev})
+		if err != nil {
+			if isVersionCompactedErr(err) {
+				glog.Warningf("version (%v) compacted. Will do relist. It might miss middle events.", watchRev)
+				return nil
+			}
+			glog.Warningf("Watch failed: %+v.\nWill rewatch on rev (%v)", err, watchRev)
+			continue
+		}
+
+		select {
+		case r, ok := <-w.ResultChan():
+			if !ok {
+				glog.Warningf("watch channel is closed. Will re-watch on rev (%v)", watchRev)
+				break
+			}
+			c.queueEvent(&ctrlEvent{
+				eventType: ctrlEventType(r.Type),
+				obj:       r.Object,
+			}, stopCh)
+			watchRev, err = getResourceVersion(r.Object)
+			if err != nil {
+				return err
+			}
+		case <-stopCh:
+			return nil
+		}
+	}
+}
+
+func (c *Controller) listItems(stopCh <-chan struct{}) (string, error) {
+	options := api.ListOptions{ResourceVersion: "0"}
+	items, rev, err := listAndConvert(c.lw, options)
+	if err != nil {
+		return "", err
+	}
+	c.queueEvent(&ctrlEvent{
+		eventType: eventTypeRelist,
+		items:     items,
+	}, stopCh)
+	return rev, nil
+}
+
+func (c *Controller) eventQueuing(stopCh <-chan struct{}) {
+	pending := make([]*ctrlEvent, 0)
+	var eventCh chan *ctrlEvent
+	var ev *ctrlEvent
+	for {
+		if len(pending) > 0 {
+			ev = pending[0]
+			eventCh = c.eventChan
+		} else {
+			eventCh = nil
+		}
+
+		select {
+		case msg := <-c.queueChan:
+			pending = append(pending, msg)
+		case eventCh <- ev:
+			pending = pending[1:]
+		case <-stopCh:
+		}
+	}
+}
+
+// All updates to store goes here. Serialize all operations.
+func (c *Controller) eventProcessing(stopCh <-chan struct{}) error {
+	for {
+		select {
+		case ev := <-c.eventChan:
+			if err := c.handle(ev); err != nil {
+				return err
+			}
+		case <-stopCh:
+		}
+	}
+}
+
+func (c *Controller) handle(ev *ctrlEvent) error {
+	switch ev.eventType {
+	case eventTypeRelist:
+		if err := c.diffSync(ev.items); err != nil {
+			return err
+		}
+	case eventTypeAdd:
+		c.handleAdd(ev.obj)
+	case eventTypeModify:
+		key, err := cache.MetaNamespaceKeyFunc(ev.obj)
+		if err != nil {
+			return err
+		}
+		oldItem, _, err := c.store.GetByKey(key)
+		if err != nil {
+			return err
+		}
+		c.handleUpdate(oldItem, ev.obj)
+	case eventTypeDelete:
+		c.handleDelete(ev.obj)
+	case eventTypeResync:
+		c.iterateStoreItems()
+	}
+	return nil
+}
+
+func (c *Controller) queueEvent(ev *ctrlEvent, stopCh <-chan struct{}) {
+	select {
+	case c.queueChan <- ev:
+	case <-stopCh:
+	}
+}
+
+func (c *Controller) diffSync(newItems []runtime.Object) error {
+	// Definitions:
+	// - newItems: the items listed from remote store.
+	// - oldItems: the items that existed in local cache.
+	// Actions based on conditions:
+	// - Add item that exist in newItems but not in oldItems.
+	// - Update item that exist in both newItems not oldItems.
+	// - Delete item that exist in oldItems but not newItems.
+	// Note:
+	// - Update doesn't take in account no revision change. Two reasons: Resync and backward compability.
+	newItemKeys := make(sets.String, len(newItems))
+	for _, newItem := range newItems {
+		key, err := cache.MetaNamespaceKeyFunc(newItem)
+		if err != nil {
+			return err
+		}
+		newItemKeys.Insert(key)
+		oldItem, exists, err := c.store.GetByKey(key)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			c.handleAdd(newItem)
+			continue
+		}
+		c.handleUpdate(oldItem, newItem)
+	}
+
+	oldItemKeys := c.store.ListKeys()
+	for _, key := range oldItemKeys {
+		if !newItemKeys.Has(key) {
+			oldItem, _, err := c.store.GetByKey(key)
+			if err != nil {
+				return err
+			}
+			c.handleDelete(cache.DeletedFinalStateUnknown{
+				Key: key,
+				Obj: oldItem,
+			})
+		}
+	}
+	c.mu.Lock()
+	c.populated = true
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Controller) handleAdd(item interface{}) {
+	c.store.Add(item)
+	for _, handler := range c.handlers {
+		handler.OnAdd(item)
+	}
+}
+
+func (c *Controller) handleUpdate(oldItem, newItem interface{}) {
+	c.store.Update(newItem)
+	for _, handler := range c.handlers {
+		handler.OnUpdate(oldItem, newItem)
+	}
+}
+
+func (c *Controller) handleDelete(item interface{}) {
+	c.store.Delete(item)
+	for _, handler := range c.handlers {
+		handler.OnDelete(item)
+	}
+}
+
+func (c *Controller) iterateStoreItems() {
+	for _, item := range c.store.List() {
+		c.handleUpdate(item, item)
+	}
 }
 
 // Returns true once this controller has completed an initial resource listing
 func (c *Controller) HasSynced() bool {
-	return c.config.Queue.HasSynced()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.populated
+}
+
+func (c *Controller) resyncPeriodically(stopCh <-chan struct{}) {
+	for {
+		select {
+		case <-time.After(c.resyncPeriod):
+			c.queueEvent(&ctrlEvent{
+				eventType: eventTypeResync,
+			}, stopCh)
+		case <-stopCh:
+		}
+	}
 }
 
 // Requeue adds the provided object back into the queue if it does not already exist.
 func (c *Controller) Requeue(obj interface{}) error {
-	return c.config.Queue.AddIfNotPresent(cache.Deltas{
-		cache.Delta{
-			Type:   cache.Sync,
-			Object: obj,
-		},
-	})
+	// Race of old implementation:
+	// - Requeue would add an item back if it's been deleted. But requeue is just trying to reprocess it.
+	return nil
 }
 
-// processLoop drains the work queue.
-// TODO: Consider doing the processing in parallel. This will require a little thought
-// to make sure that we don't end up processing the same object multiple times
-// concurrently.
-func (c *Controller) processLoop() {
-	for {
-		obj, err := c.config.Queue.Pop(cache.PopProcessFunc(c.config.Process))
-		if err != nil {
-			if c.config.RetryOnError {
-				// This is the safe way to re-enqueue.
-				c.config.Queue.AddIfNotPresent(obj)
-			}
-		}
+func (c *Controller) addEventHandler(handler ResourceEventHandler) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.started {
+		return fmt.Errorf("controller has already started")
 	}
+
+	c.handlers = append(c.handlers, handler)
+	return nil
 }
 
 // ResourceEventHandler can handle notifications for events that happen to a
@@ -208,55 +404,15 @@ func DeletionHandlingMetaNamespaceKeyFunc(obj interface{}) (string, error) {
 //    long as possible (until the upstream source closes the watch or times out,
 //    or you stop the controller).
 //  * h is the object you want notifications sent to.
-//
 func NewInformer(
 	lw cache.ListerWatcher,
 	objType runtime.Object,
 	resyncPeriod time.Duration,
 	h ResourceEventHandler,
 ) (cache.Store, *Controller) {
-	// This will hold the client state, as we know it.
-	clientState := cache.NewStore(DeletionHandlingMetaNamespaceKeyFunc)
-
-	// This will hold incoming changes. Note how we pass clientState in as a
-	// KeyLister, that way resync operations will result in the correct set
-	// of update/delete deltas.
-	fifo := cache.NewDeltaFIFO(cache.MetaNamespaceKeyFunc, nil, clientState)
-
-	cfg := &Config{
-		Queue:            fifo,
-		ListerWatcher:    lw,
-		ObjectType:       objType,
-		FullResyncPeriod: resyncPeriod,
-		RetryOnError:     false,
-
-		Process: func(obj interface{}) error {
-			// from oldest to newest
-			for _, d := range obj.(cache.Deltas) {
-				switch d.Type {
-				case cache.Sync, cache.Added, cache.Updated:
-					if old, exists, err := clientState.Get(d.Object); err == nil && exists {
-						if err := clientState.Update(d.Object); err != nil {
-							return err
-						}
-						h.OnUpdate(old, d.Object)
-					} else {
-						if err := clientState.Add(d.Object); err != nil {
-							return err
-						}
-						h.OnAdd(d.Object)
-					}
-				case cache.Deleted:
-					if err := clientState.Delete(d.Object); err != nil {
-						return err
-					}
-					h.OnDelete(d.Object)
-				}
-			}
-			return nil
-		},
-	}
-	return clientState, New(cfg)
+	informer := newCoreInformer(lw, objType, resyncPeriod, cache.Indexers{})
+	informer.addEventHandler(h)
+	return informer.GetIndexer(), informer.Controller
 }
 
 // NewIndexerInformer returns a cache.Indexer and a controller for populating the index
@@ -273,7 +429,6 @@ func NewInformer(
 //    long as possible (until the upstream source closes the watch or times out,
 //    or you stop the controller).
 //  * h is the object you want notifications sent to.
-//
 func NewIndexerInformer(
 	lw cache.ListerWatcher,
 	objType runtime.Object,
@@ -281,46 +436,7 @@ func NewIndexerInformer(
 	h ResourceEventHandler,
 	indexers cache.Indexers,
 ) (cache.Indexer, *Controller) {
-	// This will hold the client state, as we know it.
-	clientState := cache.NewIndexer(DeletionHandlingMetaNamespaceKeyFunc, indexers)
-
-	// This will hold incoming changes. Note how we pass clientState in as a
-	// KeyLister, that way resync operations will result in the correct set
-	// of update/delete deltas.
-	fifo := cache.NewDeltaFIFO(cache.MetaNamespaceKeyFunc, nil, clientState)
-
-	cfg := &Config{
-		Queue:            fifo,
-		ListerWatcher:    lw,
-		ObjectType:       objType,
-		FullResyncPeriod: resyncPeriod,
-		RetryOnError:     false,
-
-		Process: func(obj interface{}) error {
-			// from oldest to newest
-			for _, d := range obj.(cache.Deltas) {
-				switch d.Type {
-				case cache.Sync, cache.Added, cache.Updated:
-					if old, exists, err := clientState.Get(d.Object); err == nil && exists {
-						if err := clientState.Update(d.Object); err != nil {
-							return err
-						}
-						h.OnUpdate(old, d.Object)
-					} else {
-						if err := clientState.Add(d.Object); err != nil {
-							return err
-						}
-						h.OnAdd(d.Object)
-					}
-				case cache.Deleted:
-					if err := clientState.Delete(d.Object); err != nil {
-						return err
-					}
-					h.OnDelete(d.Object)
-				}
-			}
-			return nil
-		},
-	}
-	return clientState, New(cfg)
+	informer := newCoreInformer(lw, objType, resyncPeriod, indexers)
+	informer.addEventHandler(h)
+	return informer.GetIndexer(), informer.Controller
 }
