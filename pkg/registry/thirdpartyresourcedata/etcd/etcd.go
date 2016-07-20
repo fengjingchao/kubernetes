@@ -19,6 +19,8 @@ package etcd
 import (
 	"strings"
 
+	"github.com/golang/glog"
+
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/pkg/registry/generic"
@@ -37,8 +39,7 @@ type REST struct {
 func NewREST(opts generic.RESTOptions, group, kind string) *REST {
 	prefix := "/ThirdPartyResourceData/" + group + "/" + strings.ToLower(kind) + "s"
 
-	// We explicitly do NOT do any decoration here yet.
-	storageInterface := opts.Storage
+	s := registry.StorageWithCacher(opts.StorageConfig, 0, nil, prefix, nil, nil, nil)
 
 	store := &registry.Store{
 		NewFunc:     func() runtime.Object { return &extensions.ThirdPartyResourceData{} },
@@ -59,7 +60,16 @@ func NewREST(opts generic.RESTOptions, group, kind string) *REST {
 		UpdateStrategy:          thirdpartyresourcedata.Strategy,
 		DeleteStrategy:          thirdpartyresourcedata.Strategy,
 
-		Storage: storageInterface,
+		Storage: s,
+
+		FVGetFunc: func(field string, obj runtime.Object) (string, bool) {
+			o, ok := obj.(*extensions.ThirdPartyResourceData)
+			if !ok {
+				glog.Warningf("Unexpected type: %T", obj)
+				return "", false
+			}
+			return registry.GetFVCommon(field, o.Labels, thirdpartyresourcedata.SelectableFields(o))
+		},
 	}
 
 	return &REST{

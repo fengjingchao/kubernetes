@@ -84,6 +84,10 @@ func getAttrs(obj runtime.Object) (objLabels labels.Set, objFields fields.Set, e
 		l = labels.Set{}
 	}
 
+	return l, GetFieldsSet(event), nil
+}
+
+func GetFieldsSet(event *api.Event) fields.Set {
 	objectMetaFieldsSet := generic.ObjectMetaFieldsSet(event.ObjectMeta, true)
 	specificFieldsSet := fields.Set{
 		"involvedObject.kind":            event.InvolvedObject.Kind,
@@ -97,5 +101,5 @@ func getAttrs(obj runtime.Object) (objLabels labels.Set, objFields fields.Set, e
 		"source":                         event.Source.Component,
 		"type":                           event.Type,
 	}
-	return l, generic.MergeFieldsSets(objectMetaFieldsSet, specificFieldsSet), nil
+	return generic.MergeFieldsSets(objectMetaFieldsSet, specificFieldsSet)
 }

@@ -17,6 +17,7 @@ limitations under the License.
 package etcd
 
 import (
+	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/registry/configmap"
 	"k8s.io/kubernetes/pkg/registry/generic"
@@ -35,8 +36,8 @@ func NewREST(opts generic.RESTOptions) *REST {
 	prefix := "/" + opts.ResourcePrefix
 
 	newListFunc := func() runtime.Object { return &api.ConfigMapList{} }
-	storageInterface := opts.Decorator(
-		opts.Storage, 100, &api.ConfigMap{}, prefix, configmap.Strategy, newListFunc, storage.NoTriggerPublisher)
+	storageInterface := registry.StorageWithCacher(
+		opts.StorageConfig, 100, &api.ConfigMap{}, prefix, configmap.Strategy, newListFunc, storage.NoTriggerPublisher)
 
 	store := &registry.Store{
 		NewFunc: func() runtime.Object {
@@ -75,6 +76,15 @@ func NewREST(opts generic.RESTOptions) *REST {
 		DeleteStrategy: configmap.Strategy,
 
 		Storage: storageInterface,
+
+		FVGetFunc: func(field string, obj runtime.Object) (string, bool) {
+			o, ok := obj.(*api.ConfigMap)
+			if !ok {
+				glog.Warningf("Unexpected type: %T", obj)
+				return "", false
+			}
+			return registry.GetFVCommon(field, o.Labels, configmap.ConfigMapToSelectableFields(o))
+		},
 	}
 	return &REST{store}
 }

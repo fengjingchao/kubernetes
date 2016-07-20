@@ -16,31 +16,25 @@ limitations under the License.
 
 package generic
 
-import (
-	"k8s.io/kubernetes/pkg/api/rest"
-	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/storage"
-)
-
 // StorageDecorator is a function signature for producing
 // a storage.Interface from given parameters.
-type StorageDecorator func(
-	storageInterface storage.Interface,
-	capacity int,
-	objectType runtime.Object,
-	resourcePrefix string,
-	scopeStrategy rest.NamespaceScopedStrategy,
-	newListFunc func() runtime.Object,
-	trigger storage.TriggerPublisherFunc) storage.Interface
+// type StorageDecorator func(
+// 	storageInterface StorageConfig,
+// 	capacity int,
+// 	objectType runtime.Object,
+// 	resourcePrefix string,
+// 	scopeStrategy rest.NamespaceScopedStrategy,
+// 	newListFunc func() runtime.Object,
+// 	trigger storage.TriggerPublisherFunc) storage.Interface
 
 // Returns given 'storageInterface' without any decoration.
-func UndecoratedStorage(
-	storageInterface storage.Interface,
-	capacity int,
-	objectType runtime.Object,
-	resourcePrefix string,
-	scopeStrategy rest.NamespaceScopedStrategy,
-	newListFunc func() runtime.Object,
-	trigger storage.TriggerPublisherFunc) storage.Interface {
-	return storageInterface
-}
+// func UndecoratedStorage(
+// 	storageInterface storage.Interface,
+// 	capacity int,
+// 	objectType runtime.Object,
+// 	resourcePrefix string,
+// 	scopeStrategy rest.NamespaceScopedStrategy,
+// 	newListFunc func() runtime.Object,
+// 	trigger storage.TriggerPublisherFunc) storage.Interface {
+// 	panic("")
+// }

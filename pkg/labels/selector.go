@@ -28,6 +28,12 @@ import (
 	"k8s.io/kubernetes/pkg/util/validation"
 )
 
+type SelectorFields struct {
+	Op     Operator
+	Key    string
+	Values []string
+}
+
 // Selector represents a label selector.
 type Selector interface {
 	// Matches returns true if this selector matches the given set of labels.
@@ -41,6 +47,8 @@ type Selector interface {
 
 	// Add adds requirements to the Selector
 	Add(r ...Requirement) Selector
+
+	ToSelectorFields() []SelectorFields
 }
 
 // Everything returns a selector that matches all labels.
@@ -54,6 +62,9 @@ func (n nothingSelector) Matches(_ Labels) bool         { return false }
 func (n nothingSelector) Empty() bool                   { return false }
 func (n nothingSelector) String() string                { return "<null>" }
 func (n nothingSelector) Add(_ ...Requirement) Selector { return n }
+func (n nothingSelector) ToSelectorFields() []SelectorFields {
+	return []SelectorFields{{Op: NoneOperator}}
+}
 
 // Nothing returns a selector that matches no labels
 func Nothing() Selector {
@@ -65,6 +76,8 @@ func Nothing() Selector {
 type Operator string
 
 const (
+	// The nothing selector is a stupid design. It shouldn't go into this layer and be a selector.
+	NoneOperator         Operator = "none"
 	DoesNotExistOperator Operator = "!"
 	EqualsOperator       Operator = "="
 	DoubleEqualsOperator Operator = "=="
@@ -309,6 +322,19 @@ func (lsel internalSelector) String() string {
 		reqs = append(reqs, lsel[ix].String())
 	}
 	return strings.Join(reqs, ",")
+}
+
+func (l internalSelector) ToSelectorFields() (ss []SelectorFields) {
+	for i := range l {
+		r := &l[i]
+		s := SelectorFields{
+			Op:     r.Operator(),
+			Key:    r.Key(),
+			Values: r.Values().List(),
+		}
+		ss = append(ss, s)
+	}
+	return ss
 }
 
 // constants definition for lexer token

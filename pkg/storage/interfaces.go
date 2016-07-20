@@ -19,6 +19,7 @@ package storage
 import (
 	"golang.org/x/net/context"
 	"k8s.io/kubernetes/pkg/runtime"
+	"k8s.io/kubernetes/pkg/storage/selector"
 	"k8s.io/kubernetes/pkg/types"
 	"k8s.io/kubernetes/pkg/watch"
 )
@@ -109,95 +110,97 @@ func NewUIDPreconditions(uid string) *Preconditions {
 	return &Preconditions{UID: &u}
 }
 
-// Interface offers a common interface for object marshaling/unmarshaling operations and
+// ===========================================================================
+//
+//     quu..__
+//      $$$b  `---.__
+//       "$$b        `--.                          ___.---uuudP
+//        `$$b           `.__.------.__     __.---'      $$$$"              .
+//          "$b          -' _          `-.-'            $$$"              .'|
+//            ".           | |                         d$"             _.'  |
+//              `.   /     | |                      ..."             .'     |
+//                `./      | |___               ..::-'            _.'       |
+//                 /       |_____|           .:::-'            .-'         .'
+//                :                          ::''\          _.'            |
+//               .' .-.             .-.           `.      .'               |
+//               : /'$$|           .@"$\           `.   .'              _.-'
+//              .'|$u$$|          |$$,$$|           |  <            _.-'
+//              | `:$$:'          :$$$$$:           `.  `.       .-'
+//              :                  `"--'             |    `-.     \
+//             :##.       ==             .###.       `.      `.    `\
+//             |##:                      :###:        |        >     >
+//             |#'     `..'`..'          `###'        x:      /     /
+//              \                                   xXX|     /    ./
+//               \                                xXXX'|    /   ./
+//               /`-.                                  `.  /   /
+//              :    `-  ...........,                   | /  .'
+//              |         ``:::::::'       .            |<    `.
+//              |             ```          |           x| \ `.:``.
+//              |                         .'    /'   xXX|  `:`M`M':.
+//              |    |                    ;    /:' xXXX'|  -'MMMMM:'
+//              `.  .'                   :    /:'       |-'MMMM.-'
+//               |  |                   .'   /'        .'MMM.-'
+//               `'`'                   :  ,'          |MMM<
+//                 |                     `'            |tbap\
+//                  \                                  :MM.-'
+//                   \                 |              .''
+//                    \.               `.            /
+//                     /     .:::::::.. :           /
+//                    |     .:::::::::::`.         /
+//                    |   .:::------------\       /
+//                   /   .''               >::'  /
+//                   `',:                 :    .'
+//                                        `:.:'  Pikachu!
+//
+// ===========================================================================
+
+// Interface offers a common interface for object marshaling/unmarshling operations and
 // hides all the storage-related operations behind it.
 type Interface interface {
-	// Returns list of servers addresses of the underyling database.
-	// TODO: This method is used only in a single place. Consider refactoring and getting rid
-	// of this method from the interface.
-	Backends(ctx context.Context) []string
 
-	// Returns Versioner associated with this interface.
-	Versioner() Versioner
+	// Put...
+	// if prevVersion < 0, we will set the object with current largest resource version,
+	// put the object on the key, and returns the stored object.
+	// If prevVersion >= 0, we will use it to do Compare-And-Swap against existing object's resource version.
+	// Note that prevVersion = 0 means no previous object on given key.
+	// - If compare failed, it will return current object (nil if non-exist) and StorageError of VersionConflicts.
+	// - If compare succeed, it will behave like "prevVersion < 0".
+	Put(key string, obj runtime.Object, prevVersion int64) (cur runtime.Object, err error)
 
-	// Create adds a new object at a key unless it already exists. 'ttl' is time-to-live
-	// in seconds (0 means forever). If no error is returned and out is not nil, out will be
-	// set to the read value from database.
-	Create(ctx context.Context, key string, obj, out runtime.Object, ttl uint64) error
+	// Delete...
+	// If prevVersion < 0, we will try to delete the object and return the deleted object. If no object existed
+	// on given key, we returns nil object and nil error.
+	// If prevVersion > 0, we will use it to do Compare-And-Delete against existing object's resource version.
+	// - If compare failed, it will return current object (nil if non-exist) and StorageError of VersionConflicts.
+	// - If compare succeed, it will behave like "prevVersion < 0".
+	Delete(key string, prevRev int64) (cur runtime.Object, err error)
 
-	// Delete removes the specified key and returns the value that existed at that spot.
-	// If key didn't exist, it will return NotFound storage error.
-	Delete(ctx context.Context, key string, out runtime.Object, preconditions *Preconditions) error
+	// Get gets the most recent version of a key.
+	// What is "most recent version" of a key? -- A key that was modified by this interface
+	// should be reflected on read after write succeeded.
+	// If no object exists on the key, it will return nil object and nil error.
+	Get(key string) (cur runtime.Object, err error)
 
-	// Watch begins watching the specified key. Events are decoded into API objects,
-	// and any items passing 'filter' are sent down to returned watch.Interface.
-	// resourceVersion may be used to specify what version to begin watching,
-	// which should be the current resourceVersion, and no longer rv+1
-	// (e.g. reconnecting without missing any updates).
-	Watch(ctx context.Context, key string, resourceVersion string, filter Filter) (watch.Interface, error)
+	// if version >=0, list should wait until we have seen object with version >= given version.
+	List(prefix string, version int64, ss ...selector.Selector) (objects []runtime.Object, globalRev int64, err error)
 
-	// WatchList begins watching the specified key's items. Items are decoded into API
-	// objects and any item passing 'filter' are sent down to returned watch.Interface.
-	// resourceVersion may be used to specify what version to begin watching,
-	// which should be the current resourceVersion, and no longer rv+1
-	// (e.g. reconnecting without missing any updates).
-	WatchList(ctx context.Context, key string, resourceVersion string, filter Filter) (watch.Interface, error)
+	// WatchPrefix watches a prefix after given rev. If rev is 0, we will watch from current state.
+	// It returns notifications of any keys that has given prefix.
+	// Given selectors, it returns events that contained object of interest, either of current and previous.
+	// If there is any problem establishing the watch channel, it will return error. After channel is established,
+	// any error that happened will be returned from WatchChan immediately before it's closed.
+	WatchPrefix(ctx context.Context, prefix string, version int64, ss ...selector.Selector) (WatchChan, error)
 
-	// Get unmarshals json found at key into objPtr. On a not found error, will either
-	// return a zero object of the requested type, or an error, depending on ignoreNotFound.
-	// Treats empty responses and nil response nodes exactly like a not found error.
-	Get(ctx context.Context, key string, objPtr runtime.Object, ignoreNotFound bool) error
-
-	// GetToList unmarshals json found at key and opaque it into *List api object
-	// (an object that satisfies the runtime.IsList definition).
-	GetToList(ctx context.Context, key string, filter Filter, listObj runtime.Object) error
-
-	// List unmarshalls jsons found at directory defined by key and opaque them
-	// into *List api object (an object that satisfies runtime.IsList definition).
-	// The returned contents may be delayed, but it is guaranteed that they will
-	// be have at least 'resourceVersion'.
-	List(ctx context.Context, key string, resourceVersion string, filter Filter, listObj runtime.Object) error
-
-	// GuaranteedUpdate keeps calling 'tryUpdate()' to update key 'key' (of type 'ptrToType')
-	// retrying the update until success if there is index conflict.
-	// Note that object passed to tryUpdate may change across invocations of tryUpdate() if
-	// other writers are simultaneously updating it, so tryUpdate() needs to take into account
-	// the current contents of the object when deciding how the update object should look.
-	// If the key doesn't exist, it will return NotFound storage error if ignoreNotFound=false
-	// or zero value in 'ptrToType' parameter otherwise.
-	// If the object to update has the same value as previous, it won't do any update
-	// but will return the object in 'ptrToType' parameter.
 	//
-	// Example:
-	//
-	// s := /* implementation of Interface */
-	// err := s.GuaranteedUpdate(
-	//     "myKey", &MyType{}, true,
-	//     func(input runtime.Object, res ResponseMeta) (runtime.Object, *uint64, error) {
-	//       // Before each incovation of the user defined function, "input" is reset to
-	//       // current contents for "myKey" in database.
-	//       curr := input.(*MyType)  // Guaranteed to succeed.
-	//
-	//       // Make the modification
-	//       curr.Counter++
-	//
-	//       // Return the modified object - return an error to stop iterating. Return
-	//       // a uint64 to alter the TTL on the object, or nil to keep it the same value.
-	//       return cur, nil, nil
-	//    }
-	// })
-	GuaranteedUpdate(ctx context.Context, key string, ptrToType runtime.Object, ignoreNotFound bool, precondtions *Preconditions, tryUpdate UpdateFunc) error
-
-	// Codec provides access to the underlying codec being used by the implementation.
-	Codec() runtime.Codec
+	AddIndex(idxName, field string, g selector.FieldValueGetFunc) error
+	DeleteIndex(idxName string)
 }
 
-// Config interface allows storage tiers to generate the proper storage.interface
-// and reduce the dependencies to encapsulate storage.
-type Config interface {
-	// Creates the Interface base on ConfigObject
-	NewStorage() (Interface, error)
+type WatchChan <-chan WatchResponse
 
-	// This function is used to enforce membership, and return the underlying type
-	GetType() string
+type WatchResponse struct {
+	Type       watch.EventType
+	Object     runtime.Object
+	PrevObject runtime.Object
+	Err        error
 }

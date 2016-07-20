@@ -170,14 +170,6 @@ func NewCacherFromConfig(config CacherConfig) *Cacher {
 	watchCache := newWatchCache(config.CacheCapacity)
 	listerWatcher := newCacherListerWatcher(config.Storage, config.ResourcePrefix, config.NewListFunc)
 
-	// Give this error when it is constructed rather than when you get the
-	// first watch item, because it's much easier to track down that way.
-	if obj, ok := config.Type.(runtime.Object); ok {
-		if err := runtime.CheckCodec(config.Storage.Codec(), obj); err != nil {
-			panic("storage codec doesn't seem to match given type: " + err.Error())
-		}
-	}
-
 	cacher := &Cacher{
 		ready:       newReady(),
 		storage:     config.Storage,
@@ -244,24 +236,19 @@ func (c *Cacher) startCaching(stopChannel <-chan struct{}) {
 }
 
 // Implements storage.Interface.
-func (c *Cacher) Backends(ctx context.Context) []string {
-	return c.storage.Backends(ctx)
-}
+//func (c *Cacher) Versioner() Versioner {
+//	return c.storage.Versioner()
+//}
 
 // Implements storage.Interface.
-func (c *Cacher) Versioner() Versioner {
-	return c.storage.Versioner()
-}
+//func (c *Cacher) Create(ctx context.Context, key string, obj, out runtime.Object, ttl uint64) error {
+//	return c.storage.Create(ctx, key, obj, out, ttl)
+//}
 
 // Implements storage.Interface.
-func (c *Cacher) Create(ctx context.Context, key string, obj, out runtime.Object, ttl uint64) error {
-	return c.storage.Create(ctx, key, obj, out, ttl)
-}
-
-// Implements storage.Interface.
-func (c *Cacher) Delete(ctx context.Context, key string, out runtime.Object, preconditions *Preconditions) error {
-	return c.storage.Delete(ctx, key, out, preconditions)
-}
+//func (c *Cacher) Delete(ctx context.Context, key string, out runtime.Object, preconditions *Preconditions) error {
+//	return c.storage.Delete(ctx, key, out, preconditions)
+//}
 
 // Implements storage.Interface.
 func (c *Cacher) Watch(ctx context.Context, key string, resourceVersion string, filter Filter) (watch.Interface, error) {
@@ -311,21 +298,21 @@ func (c *Cacher) WatchList(ctx context.Context, key string, resourceVersion stri
 }
 
 // Implements storage.Interface.
-func (c *Cacher) Get(ctx context.Context, key string, objPtr runtime.Object, ignoreNotFound bool) error {
-	return c.storage.Get(ctx, key, objPtr, ignoreNotFound)
-}
+//func (c *Cacher) Get(ctx context.Context, key string, objPtr runtime.Object, ignoreNotFound bool) error {
+//	return c.storage.Get(ctx, key, objPtr, ignoreNotFound)
+//}
 
 // Implements storage.Interface.
-func (c *Cacher) GetToList(ctx context.Context, key string, filter Filter, listObj runtime.Object) error {
-	return c.storage.GetToList(ctx, key, filter, listObj)
-}
+//func (c *Cacher) GetToList(ctx context.Context, key string, filter FilterFunc, listObj runtime.Object) error {
+//	return c.storage.GetToList(ctx, key, filter, listObj)
+//}
 
 // Implements storage.Interface.
 func (c *Cacher) List(ctx context.Context, key string, resourceVersion string, filter Filter, listObj runtime.Object) error {
 	if resourceVersion == "" {
 		// If resourceVersion is not specified, serve it from underlying
 		// storage (for backward compatibility).
-		return c.storage.List(ctx, key, resourceVersion, filter, listObj)
+		//return c.storage.List(ctx, key, resourceVersion, filter, listObj)
 	}
 
 	// If resourceVersion is specified, serve it from cache.
@@ -372,14 +359,9 @@ func (c *Cacher) List(ctx context.Context, key string, resourceVersion string, f
 }
 
 // Implements storage.Interface.
-func (c *Cacher) GuaranteedUpdate(ctx context.Context, key string, ptrToType runtime.Object, ignoreNotFound bool, preconditions *Preconditions, tryUpdate UpdateFunc) error {
-	return c.storage.GuaranteedUpdate(ctx, key, ptrToType, ignoreNotFound, preconditions, tryUpdate)
-}
-
-// Implements storage.Interface.
-func (c *Cacher) Codec() runtime.Codec {
-	return c.storage.Codec()
-}
+//func (c *Cacher) GuaranteedUpdate(ctx context.Context, key string, ptrToType runtime.Object, ignoreNotFound bool, preconditions *Preconditions, tryUpdate UpdateFunc) error {
+//	return c.storage.GuaranteedUpdate(ctx, key, ptrToType, ignoreNotFound, preconditions, tryUpdate)
+//}
 
 func (c *Cacher) triggerValues(event *watchCacheEvent) ([]string, bool) {
 	// TODO: Currently we assume that in a given Cacher object, its <c.triggerFunc>
@@ -506,26 +488,27 @@ type cacherListerWatcher struct {
 }
 
 func newCacherListerWatcher(storage Interface, resourcePrefix string, newListFunc func() runtime.Object) cache.ListerWatcher {
-	return &cacherListerWatcher{
-		storage:        storage,
-		resourcePrefix: resourcePrefix,
-		newListFunc:    newListFunc,
-	}
+	return nil
+	//return &cacherListerWatcher{
+	//	storage:        storage,
+	//	resourcePrefix: resourcePrefix,
+	//	newListFunc:    newListFunc,
+	//}
 }
 
 // Implements cache.ListerWatcher interface.
-func (lw *cacherListerWatcher) List(options api.ListOptions) (runtime.Object, error) {
-	list := lw.newListFunc()
-	if err := lw.storage.List(context.TODO(), lw.resourcePrefix, "", Everything, list); err != nil {
-		return nil, err
-	}
-	return list, nil
-}
+//func (lw *cacherListerWatcher) List(options api.ListOptions) (runtime.Object, error) {
+//	list := lw.newListFunc()
+//	if err := lw.storage.List(context.TODO(), lw.resourcePrefix, "", Everything, list); err != nil {
+//		return nil, err
+//	}
+//	return list, nil
+//}
 
 // Implements cache.ListerWatcher interface.
-func (lw *cacherListerWatcher) Watch(options api.ListOptions) (watch.Interface, error) {
-	return lw.storage.WatchList(context.TODO(), lw.resourcePrefix, options.ResourceVersion, Everything)
-}
+//func (lw *cacherListerWatcher) Watch(options api.ListOptions) (watch.Interface, error) {
+//	return lw.storage.WatchList(context.TODO(), lw.resourcePrefix, options.ResourceVersion, Everything)
+//}
 
 // cacherWatch implements watch.Interface to return a single error
 type errWatcher struct {

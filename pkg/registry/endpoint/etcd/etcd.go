@@ -17,6 +17,7 @@ limitations under the License.
 package etcd
 
 import (
+	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/registry/cachesize"
 	"k8s.io/kubernetes/pkg/registry/endpoint"
@@ -35,8 +36,8 @@ func NewREST(opts generic.RESTOptions) *REST {
 	prefix := "/" + opts.ResourcePrefix
 
 	newListFunc := func() runtime.Object { return &api.EndpointsList{} }
-	storageInterface := opts.Decorator(
-		opts.Storage,
+	storageInterface := registry.StorageWithCacher(
+		opts.StorageConfig,
 		cachesize.GetWatchCacheSizeByResource(cachesize.Endpoints),
 		&api.Endpoints{},
 		prefix,
@@ -66,6 +67,15 @@ func NewREST(opts generic.RESTOptions) *REST {
 		DeleteStrategy: endpoint.Strategy,
 
 		Storage: storageInterface,
+
+		FVGetFunc: func(field string, obj runtime.Object) (string, bool) {
+			o, ok := obj.(*api.Endpoints)
+			if !ok {
+				glog.Warningf("Unexpected type: %T", obj)
+				return "", false
+			}
+			return registry.GetFVCommon(field, o.Labels, generic.ObjectMetaFieldsSet(o.ObjectMeta, true))
+		},
 	}
 	return &REST{store}
 }

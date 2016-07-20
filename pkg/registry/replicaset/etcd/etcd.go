@@ -21,6 +21,8 @@ package etcd
 import (
 	"fmt"
 
+	"github.com/golang/glog"
+
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/errors"
 	"k8s.io/kubernetes/pkg/api/rest"
@@ -61,8 +63,8 @@ func NewREST(opts generic.RESTOptions) (*REST, *StatusREST) {
 	prefix := "/" + opts.ResourcePrefix
 
 	newListFunc := func() runtime.Object { return &extensions.ReplicaSetList{} }
-	storageInterface := opts.Decorator(
-		opts.Storage,
+	storageInterface := registry.StorageWithCacher(
+		opts.StorageConfig,
 		cachesize.GetWatchCacheSizeByResource(cachesize.Replicasets),
 		&extensions.ReplicaSet{},
 		prefix,
@@ -103,6 +105,15 @@ func NewREST(opts generic.RESTOptions) (*REST, *StatusREST) {
 		DeleteStrategy: replicaset.Strategy,
 
 		Storage: storageInterface,
+
+		FVGetFunc: func(field string, obj runtime.Object) (string, bool) {
+			o, ok := obj.(*extensions.ReplicaSet)
+			if !ok {
+				glog.Warningf("Unexpected type: %T", obj)
+				return "", false
+			}
+			return registry.GetFVCommon(field, o.Labels, replicaset.ReplicaSetToSelectableFields(o))
+		},
 	}
 	statusStore := *store
 	statusStore.UpdateStrategy = replicaset.StatusStrategy

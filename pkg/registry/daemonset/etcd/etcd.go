@@ -17,6 +17,7 @@ limitations under the License.
 package etcd
 
 import (
+	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/rest"
 	"k8s.io/kubernetes/pkg/apis/extensions"
@@ -38,8 +39,8 @@ func NewREST(opts generic.RESTOptions) (*REST, *StatusREST) {
 	prefix := "/" + opts.ResourcePrefix
 
 	newListFunc := func() runtime.Object { return &extensions.DaemonSetList{} }
-	storageInterface := opts.Decorator(
-		opts.Storage,
+	storageInterface := registry.StorageWithCacher(
+		opts.StorageConfig,
 		cachesize.GetWatchCacheSizeByResource(cachesize.Daemonsets),
 		&extensions.DaemonSet{},
 		prefix,
@@ -80,6 +81,15 @@ func NewREST(opts generic.RESTOptions) (*REST, *StatusREST) {
 		DeleteStrategy: daemonset.Strategy,
 
 		Storage: storageInterface,
+
+		FVGetFunc: func(field string, obj runtime.Object) (string, bool) {
+			o, ok := obj.(*extensions.DaemonSet)
+			if !ok {
+				glog.Warningf("Unexpected type: %T", obj)
+				return "", false
+			}
+			return registry.GetFVCommon(field, o.Labels, daemonset.DaemonSetToSelectableFields(o))
+		},
 	}
 	statusStore := *store
 	statusStore.UpdateStrategy = daemonset.StatusStrategy

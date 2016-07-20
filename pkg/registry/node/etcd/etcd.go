@@ -21,6 +21,8 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/golang/glog"
+
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/rest"
 	"k8s.io/kubernetes/pkg/kubelet/client"
@@ -69,8 +71,8 @@ func NewStorage(opts generic.RESTOptions, connection client.ConnectionInfoGetter
 	prefix := "/" + opts.ResourcePrefix
 
 	newListFunc := func() runtime.Object { return &api.NodeList{} }
-	storageInterface := opts.Decorator(
-		opts.Storage,
+	storageInterface := registry.StorageWithCacher(
+		opts.StorageConfig,
 		cachesize.GetWatchCacheSizeByResource(cachesize.Nodes),
 		&api.Node{},
 		prefix,
@@ -100,6 +102,15 @@ func NewStorage(opts generic.RESTOptions, connection client.ConnectionInfoGetter
 		ExportStrategy: node.Strategy,
 
 		Storage: storageInterface,
+
+		FVGetFunc: func(field string, obj runtime.Object) (string, bool) {
+			o, ok := obj.(*api.Node)
+			if !ok {
+				glog.Warningf("Unexpected type: %T", obj)
+				return "", false
+			}
+			return registry.GetFVCommon(field, o.Labels, node.NodeToSelectableFields(o))
+		},
 	}
 
 	statusStore := *store

@@ -17,6 +17,7 @@ limitations under the License.
 package etcd
 
 import (
+	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/pkg/registry/generic"
@@ -34,8 +35,7 @@ type REST struct {
 func NewREST(opts generic.RESTOptions) *REST {
 	prefix := "/" + opts.ResourcePrefix
 
-	// We explicitly do NOT do any decoration here yet.
-	storageInterface := opts.Storage
+	s := registry.StorageWithCacher(opts.StorageConfig, 0, nil, prefix, nil, nil, nil)
 
 	store := &registry.Store{
 		NewFunc:     func() runtime.Object { return &extensions.ThirdPartyResource{} },
@@ -56,7 +56,16 @@ func NewREST(opts generic.RESTOptions) *REST {
 		UpdateStrategy:          thirdpartyresource.Strategy,
 		DeleteStrategy:          thirdpartyresource.Strategy,
 
-		Storage: storageInterface,
+		Storage: s,
+
+		FVGetFunc: func(field string, obj runtime.Object) (string, bool) {
+			o, ok := obj.(*extensions.ThirdPartyResource)
+			if !ok {
+				glog.Warningf("Unexpected type: %T", obj)
+				return "", false
+			}
+			return registry.GetFVCommon(field, o.Labels, thirdpartyresource.SelectableFields(o))
+		},
 	}
 
 	return &REST{store}

@@ -30,16 +30,20 @@ import (
 	"k8s.io/kubernetes/pkg/api/rest"
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/api/validation"
+	"k8s.io/kubernetes/pkg/conversion"
 	"k8s.io/kubernetes/pkg/fields"
 	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/registry/generic"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/storage"
+	"k8s.io/kubernetes/pkg/storage/selector"
+	"k8s.io/kubernetes/pkg/storage/versioner"
 	utilruntime "k8s.io/kubernetes/pkg/util/runtime"
 	"k8s.io/kubernetes/pkg/util/validation/field"
 	"k8s.io/kubernetes/pkg/watch"
 
 	"github.com/golang/glog"
+	"golang.org/x/net/context"
 )
 
 // EnableGarbageCollector affects the handling of Update and Delete requests. It
@@ -118,6 +122,9 @@ type Store struct {
 	// Allows extended behavior during export, optional
 	ExportStrategy rest.RESTExportStrategy
 
+	// Each registry should know how to parse its own type of object
+	FVGetFunc selector.FieldValueGetFunc
+
 	// Used for all storage access functions
 	Storage storage.Interface
 }
@@ -184,27 +191,158 @@ func (e *Store) List(ctx api.Context, options *api.ListOptions) (runtime.Object,
 	if options != nil && options.FieldSelector != nil {
 		field = options.FieldSelector
 	}
-	return e.ListPredicate(ctx, e.PredicateFunc(label, field), options)
+	resourceVersion := "0"
+	if options != nil {
+		resourceVersion = options.ResourceVersion
+	}
+
+	version, err := storage.ParseListResourceVersion(resourceVersion)
+	if err != nil {
+		return nil, err
+	}
+
+	ss := append(
+		e.convertLSToSS(label.ToSelectorFields(), MidFieldLabel),
+		e.convertLSToSS(field.ToSelectorFields(), MidFieldField)...)
+	for _, s := range ss {
+		if s.Op == labels.NoneOperator {
+			glog.Warningf("This is stupid. Why doing this? key: %s", e.KeyRootFunc(ctx)+"/")
+			return e.NewListFunc(), nil
+		}
+	}
+	objects, globalRev, err := e.Storage.List(e.KeyRootFunc(ctx)+"/", int64(version), ss...)
+	if err != nil {
+		return nil, err
+	}
+	return convertObjectsToListObject(objects, globalRev, e.NewListFunc())
+	//return e.ListPredicate(ctx, e.PredicateFunc(label, field), options)
+}
+
+func convertObjectsToListObject(objects []runtime.Object, rev int64, listObj runtime.Object) (runtime.Object, error) {
+	listPtr, err := meta.GetItemsPtr(listObj)
+	if err != nil {
+		return nil, err
+	}
+	v, err := conversion.EnforcePtr(listPtr)
+	if err != nil || v.Kind() != reflect.Slice {
+		panic("need ptr to slice")
+	}
+	for _, obj := range objects {
+		v.Set(reflect.Append(v, reflect.ValueOf(obj).Elem()))
+	}
+	versioner.GlobalVersioner.UpdateList(listObj, uint64(rev))
+	return listObj, nil
+}
+
+const (
+	MidFieldLabel    = "label"
+	MidFieldField    = "field"
+	MidFieldLabelKey = "labelkey"
+)
+
+func (e *Store) convertLSToSS(lss []labels.SelectorFields, midField string) (ss []selector.Selector) {
+	gvk, _, err := api.Scheme.ObjectKind(e.NewFunc())
+	if err != nil {
+		panic(fmt.Errorf("There is unknown object for this registry, resource: %v, err: %v", e.QualifiedResource, err))
+	}
+	kind := gvk.Kind
+
+	for _, ls := range lss {
+		if ls.Op == labels.NoneOperator {
+			return []selector.Selector{
+				{Op: labels.NoneOperator},
+			}
+		}
+
+		if ls.Op == labels.ExistsOperator || ls.Op == labels.DoesNotExistOperator {
+			if midField != MidFieldLabel {
+				panic(fmt.Sprintf("unexpected midfield: %s", midField))
+			}
+			s := selector.Selector{
+				Op: ls.Op,
+				// We combine label key into the field.
+				// FVGetFunc will parse it out and check if it exists in labels.
+				Field:     combineFields(kind, MidFieldLabelKey, ls.Key),
+				FVGetFunc: e.FVGetFunc,
+			}
+			ss = append(ss, s)
+			continue
+		}
+
+		s := selector.Selector{
+			Op:        ls.Op,
+			Field:     combineFields(kind, midField, ls.Key),
+			Values:    ls.Values, // We rely on validation on label side.
+			FVGetFunc: e.FVGetFunc,
+		}
+		ss = append(ss, s)
+	}
+	return ss
+}
+
+func combineFields(kind, midField, key string) string {
+	return strings.Join([]string{kind, midField, key}, ".")
+}
+
+// GetFVCommon will try to extract the value for given field.
+// All FVGetFunc has the pattern to extract it from labels, fields.
+// So we make this common routine.
+// TODO: save creating fields map
+func GetFVCommon(field string, ls, fs map[string]string) (string, bool) {
+	s := strings.SplitN(field, ".", 3)
+	if len(s) != 3 {
+		glog.Warningf("Unexpected field: %v", field)
+		return "", false
+	}
+	// assumption:
+	// - If an object doesn't even have labels map created, we assume it doesn't have the key
+	// - For fields, we assumes object always has the field (it's predefined).
+	k := s[2]
+	switch s[1] {
+	case MidFieldLabel:
+		if ls == nil {
+			return "", false
+		}
+		v, ok := ls[k]
+		return v, ok
+	case MidFieldLabelKey:
+		if ls == nil {
+			return "", false
+		}
+		_, ok := ls[k]
+		if !ok {
+			return "", false
+		}
+		return k, true
+	case MidFieldField:
+		if fs == nil {
+			return "", true
+		}
+		return fs[k], true
+	default:
+		glog.Warningf("Unexpected field: %v", field)
+		return "", false
+	}
 }
 
 // ListPredicate returns a list of all the items matching m.
-func (e *Store) ListPredicate(ctx api.Context, m generic.Matcher, options *api.ListOptions) (runtime.Object, error) {
-	list := e.NewListFunc()
-	filter := e.createFilter(m)
-	if name, ok := m.MatchesSingle(); ok {
-		if key, err := e.KeyFunc(ctx, name); err == nil {
-			err := e.Storage.GetToList(ctx, key, filter, list)
-			return list, storeerr.InterpretListError(err, e.QualifiedResource)
-		}
-		// if we cannot extract a key based on the current context, the optimization is skipped
-	}
-
-	if options == nil {
-		options = &api.ListOptions{ResourceVersion: "0"}
-	}
-	err := e.Storage.List(ctx, e.KeyRootFunc(ctx), options.ResourceVersion, filter, list)
-	return list, storeerr.InterpretListError(err, e.QualifiedResource)
-}
+//func (e *Store) ListPredicate(ctx api.Context, m generic.Matcher, options *api.ListOptions) (runtime.Object, error) {
+//	list := e.NewListFunc()
+//	filterFunc := e.filterAndDecorateFunction(m)
+//	if name, ok := m.MatchesSingle(); ok {
+//		if key, err := e.KeyFunc(ctx, name); err == nil {
+//			err := e.Storage.GetToList(ctx, key, filterFunc, list)
+//			return list, storeerr.InterpretListError(err, e.QualifiedResource)
+//		}
+//		// if we cannot extract a key based on the current context, the optimization is skipped
+//	}
+//
+//	if options == nil {
+//		options = &api.ListOptions{ResourceVersion: "0"}
+//	}
+//	err := e.Storage.List(ctx, e.KeyRootFunc(ctx), options.ResourceVersion, filterFunc, list)
+//	return list, storeerr.InterpretListError(err, e.QualifiedResource)
+//}
 
 // Create inserts a new item according to the unique key from the object.
 func (e *Store) Create(ctx api.Context, obj runtime.Object) (runtime.Object, error) {
@@ -219,16 +357,19 @@ func (e *Store) Create(ctx api.Context, obj runtime.Object) (runtime.Object, err
 	if err != nil {
 		return nil, err
 	}
-	ttl, err := e.calculateTTL(obj, 0, false)
+	// TODO: Ignore ttl. We should rewrite event storage.
+	//ttl, err := e.calculateTTL(obj, 0, false)
+	//if err != nil {
+	//	return nil, err
+	//}
+
+	//out := e.NewFunc()
+	//err = e.Storage.Create(ctx, key, obj, out, ttl);
+	out, err := e.create(name, key, obj)
 	if err != nil {
 		return nil, err
 	}
-	out := e.NewFunc()
-	if err := e.Storage.Create(ctx, key, obj, out, ttl); err != nil {
-		err = storeerr.InterpretCreateError(err, e.QualifiedResource, name)
-		err = rest.CheckGeneratedNameError(e.CreateStrategy, err, obj)
-		return nil, err
-	}
+
 	if e.AfterCreate != nil {
 		if err := e.AfterCreate(out); err != nil {
 			return nil, err
@@ -240,6 +381,19 @@ func (e *Store) Create(ctx api.Context, obj runtime.Object) (runtime.Object, err
 		}
 	}
 	return out, nil
+}
+
+func (e *Store) create(name, key string, obj runtime.Object) (runtime.Object, error) {
+	res, err := e.Storage.Put(key, obj, 0)
+	if storage.IsTestFailed(err) {
+		err = storage.NewKeyExistsError(key, 0)
+	}
+	if err != nil {
+		err = storeerr.InterpretCreateError(err, e.QualifiedResource, name)
+		err = rest.CheckGeneratedNameError(e.CreateStrategy, err, obj)
+		return nil, err
+	}
+	return res, nil
 }
 
 // shouldDelete checks if a Update is removing all the object's finalizers. If so,
@@ -263,9 +417,11 @@ func (e *Store) shouldDelete(ctx api.Context, key string, obj, existing runtime.
 }
 
 func (e *Store) deleteForEmptyFinalizers(ctx api.Context, name, key string, obj runtime.Object, preconditions *storage.Preconditions) (runtime.Object, bool, error) {
-	out := e.NewFunc()
 	glog.V(6).Infof("going to delete %s from regitry, triggered by update", name)
-	if err := e.Storage.Delete(ctx, key, out, preconditions); err != nil {
+	//out := e.NewFunc()
+	//if err := e.Storage.Delete(ctx, key, out, preconditions); err != nil {
+	out, err := e.delete(ctx, key, preconditions)
+	if err != nil {
 		// Deletion is racy, i.e., there could be multiple update
 		// requests to remove all finalizers from the object, so we
 		// ignore the NotFound error.
@@ -278,7 +434,7 @@ func (e *Store) deleteForEmptyFinalizers(ctx api.Context, name, key string, obj 
 		}
 		return nil, false, storeerr.InterpretDeleteError(err, e.QualifiedResource, name)
 	}
-	_, err := e.finalizeDelete(out, true)
+	_, err = e.finalizeDelete(out, true)
 	// clients are expecting an updated object if a PUT succeeded, but
 	// finalizeDelete returns a unversioned.Status, so return the object in
 	// the request instead.
@@ -304,10 +460,9 @@ func (e *Store) Update(ctx api.Context, name string, objInfo rest.UpdatedObjectI
 		storagePreconditions.UID = preconditions.UID
 	}
 
-	out := e.NewFunc()
 	// deleteObj is only used in case a deletion is carried out
 	var deleteObj runtime.Object
-	err = e.Storage.GuaranteedUpdate(ctx, key, out, true, storagePreconditions, func(existing runtime.Object, res storage.ResponseMeta) (runtime.Object, *uint64, error) {
+	out, err := GuaranteedUpdate(e.Storage, key, e.NewFunc(), true, storagePreconditions, func(existing runtime.Object, res storage.ResponseMeta) (runtime.Object, *uint64, error) {
 		// Given the existing object, get the new object
 		obj, err := objInfo.UpdatedObject(ctx, existing)
 		if err != nil {
@@ -317,13 +472,13 @@ func (e *Store) Update(ctx api.Context, name string, objInfo rest.UpdatedObjectI
 		// If AllowUnconditionalUpdate() is true and the object specified by the user does not have a resource version,
 		// then we populate it with the latest version.
 		// Else, we check that the version specified by the user matches the version of latest storage object.
-		resourceVersion, err := e.Storage.Versioner().ObjectResourceVersion(obj)
+		resourceVersion, err := versioner.GlobalVersioner.ObjectResourceVersion(obj)
 		if err != nil {
 			return nil, nil, err
 		}
 		doUnconditionalUpdate := resourceVersion == 0 && e.UpdateStrategy.AllowUnconditionalUpdate()
 
-		version, err := e.Storage.Versioner().ObjectResourceVersion(existing)
+		version, err := versioner.GlobalVersioner.ObjectResourceVersion(existing)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -347,13 +502,13 @@ func (e *Store) Update(ctx api.Context, name string, objInfo rest.UpdatedObjectI
 		creatingObj = nil
 		if doUnconditionalUpdate {
 			// Update the object's resource version to match the latest storage object's resource version.
-			err = e.Storage.Versioner().UpdateObject(obj, res.ResourceVersion)
+			err = versioner.GlobalVersioner.UpdateObject(obj, res.ResourceVersion)
 			if err != nil {
 				return nil, nil, err
 			}
 		} else {
 			// Check if the object's resource version matches the latest resource version.
-			newVersion, err := e.Storage.Versioner().ObjectResourceVersion(obj)
+			newVersion, err := versioner.GlobalVersioner.ObjectResourceVersion(obj)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -423,18 +578,39 @@ func (e *Store) Update(ctx api.Context, name string, objInfo rest.UpdatedObjectI
 
 // Get retrieves the item from storage.
 func (e *Store) Get(ctx api.Context, name string) (runtime.Object, error) {
-	obj := e.NewFunc()
 	key, err := e.KeyFunc(ctx, name)
 	if err != nil {
 		return nil, err
 	}
-	if err := e.Storage.Get(ctx, key, obj, false); err != nil {
-		return nil, storeerr.InterpretGetError(err, e.QualifiedResource, name)
+
+	//obj := e.NewFunc()
+	//if err := e.Storage.Get(ctx, key, obj, false); err != nil {
+	//	return nil, storeerr.InterpretGetError(err, e.QualifiedResource, name)
+	//}
+	obj, err := Get(e.Storage, ctx, key, name, e.QualifiedResource, nil, false)
+	if err != nil {
+		return nil, err
 	}
+
 	if e.Decorator != nil {
 		if err := e.Decorator(obj); err != nil {
 			return nil, err
 		}
+	}
+	return obj, nil
+}
+
+func Get(s storage.Interface, ctx api.Context, key, name string, resource unversioned.GroupResource, fresh runtime.Object, ignNotFound bool) (runtime.Object, error) {
+	obj, err := s.Get(key)
+	if obj == nil && err == nil {
+		if ignNotFound {
+			return fresh, nil
+		}
+		// Note: Compatibile with old get behavior which would return not found error
+		err = storage.NewKeyNotFoundError(key, 0)
+	}
+	if err != nil {
+		return nil, storeerr.InterpretGetError(err, resource, name)
 	}
 	return obj, nil
 }
@@ -492,9 +668,11 @@ func markAsDeleting(obj runtime.Object) (err error) {
 // this functions need to be kept synced with updateForGracefulDeletionAndFinalizers.
 func (e *Store) updateForGracefulDeletion(ctx api.Context, name, key string, options *api.DeleteOptions, preconditions storage.Preconditions, in runtime.Object) (err error, ignoreNotFound, deleteImmediately bool, out, lastExisting runtime.Object) {
 	lastGraceful := int64(0)
-	out = e.NewFunc()
-	err = e.Storage.GuaranteedUpdate(
-		ctx, key, out, false, &preconditions,
+	//out = e.NewFunc()
+	//err = e.Storage.GuaranteedUpdate(
+	//	ctx, key, out, false, &preconditions,
+	out, err = GuaranteedUpdate(
+		e.Storage, key, e.NewFunc(), false, &preconditions,
 		storage.SimpleUpdate(func(existing runtime.Object) (runtime.Object, error) {
 			graceful, pendingGraceful, err := rest.BeforeDelete(e.DeleteStrategy, ctx, existing, options)
 			if err != nil {
@@ -540,9 +718,11 @@ func (e *Store) updateForGracefulDeletion(ctx api.Context, name, key string, opt
 func (e *Store) updateForGracefulDeletionAndFinalizers(ctx api.Context, name, key string, options *api.DeleteOptions, preconditions storage.Preconditions, in runtime.Object) (err error, ignoreNotFound, deleteImmediately bool, out, lastExisting runtime.Object) {
 	lastGraceful := int64(0)
 	var pendingFinalizers bool
-	out = e.NewFunc()
-	err = e.Storage.GuaranteedUpdate(
-		ctx, key, out, false, &preconditions,
+	//out = e.NewFunc()
+	//err = e.Storage.GuaranteedUpdate(
+	//	ctx, key, out, false, &preconditions,
+	out, err = GuaranteedUpdate(
+		e.Storage, key, e.NewFunc(), false, &preconditions,
 		storage.SimpleUpdate(func(existing runtime.Object) (runtime.Object, error) {
 			graceful, pendingGraceful, err := rest.BeforeDelete(e.DeleteStrategy, ctx, existing, options)
 			if err != nil {
@@ -619,10 +799,14 @@ func (e *Store) Delete(ctx api.Context, name string, options *api.DeleteOptions)
 		return nil, err
 	}
 
-	obj := e.NewFunc()
-	if err := e.Storage.Get(ctx, key, obj, false); err != nil {
-		return nil, storeerr.InterpretDeleteError(err, e.QualifiedResource, name)
+	obj, err := Get(e.Storage, ctx, key, name, e.QualifiedResource, nil, false)
+	if err != nil {
+		return nil, err
 	}
+	//obj := e.NewFunc()
+	//if err := e.Storage.Get(ctx, key, obj, false); err != nil {
+	//	return nil, storeerr.InterpretDeleteError(err, e.QualifiedResource, name)
+	//}
 	// support older consumers of delete by treating "nil" as delete immediately
 	if options == nil {
 		options = api.NewDeleteOptions(0)
@@ -667,8 +851,10 @@ func (e *Store) Delete(ctx api.Context, name string, options *api.DeleteOptions)
 
 	// delete immediately, or no graceful deletion supported
 	glog.V(6).Infof("going to delete %s from regitry: ", name)
-	out = e.NewFunc()
-	if err := e.Storage.Delete(ctx, key, out, &preconditions); err != nil {
+	//out = e.NewFunc()
+	//if err := e.Storage.Delete(ctx, key, out, &preconditions); err != nil {
+	out, err = e.delete(ctx, key, &preconditions)
+	if err != nil {
 		// Please refer to the place where we set ignoreNotFound for the reason
 		// why we ignore the NotFound error .
 		if storage.IsNotFound(err) && ignoreNotFound && lastExisting != nil {
@@ -679,6 +865,40 @@ func (e *Store) Delete(ctx api.Context, name string, options *api.DeleteOptions)
 		return nil, storeerr.InterpretDeleteError(err, e.QualifiedResource, name)
 	}
 	return e.finalizeDelete(out, true)
+}
+
+func (e *Store) delete(ctx api.Context, key string, c *storage.Preconditions) (runtime.Object, error) {
+	if c == nil || c.UID == nil { // easy path..
+		return e.Storage.Delete(key, -1)
+	}
+
+	out, err := e.Storage.Get(key)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		if out == nil {
+			return nil, storage.NewKeyNotFoundError(key, 0)
+		}
+
+		if err := CheckPreconditions(key, c, out); err != nil {
+			return nil, err
+		}
+
+		rev, err := versioner.GlobalVersioner.ObjectResourceVersion(out)
+		if err != nil {
+			return nil, err
+		}
+
+		out, err = e.Storage.Delete(key, int64(rev))
+		if err == nil {
+			return out, nil
+		}
+		if storage.IsTestFailed(err) {
+			continue
+		}
+		return nil, err
+	}
 }
 
 // DeleteCollection remove all items returned by List with a given ListOptions from storage.
@@ -793,25 +1013,161 @@ func (e *Store) Watch(ctx api.Context, options *api.ListOptions) (watch.Interfac
 	if options != nil {
 		resourceVersion = options.ResourceVersion
 	}
-	return e.WatchPredicate(ctx, e.PredicateFunc(label, field), resourceVersion)
+
+	key := e.KeyRootFunc(ctx) + "/"
+	ss := append(
+		e.convertLSToSS(label.ToSelectorFields(), MidFieldLabel),
+		e.convertLSToSS(field.ToSelectorFields(), MidFieldField)...)
+
+	for _, s := range ss {
+		if s.Op == labels.NoneOperator {
+			glog.Warningf("This is stupid. Why doing this? key: %s", key)
+			return noResultWatcher{}, nil
+		}
+	}
+
+	ver, err := storage.ParseWatchResourceVersion(resourceVersion)
+	if err != nil {
+		return nil, err
+	}
+	rev := int64(ver)
+	var initialObjects []runtime.Object
+	if ver == 0 {
+		// All initial events will be ADDED.
+		initialObjects, rev, err = e.Storage.List(key, 0, ss...)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	w, err := e.Storage.WatchPrefix(ctx, key, rev, ss...)
+	if err != nil {
+		return nil, err
+	}
+	return newWatcher(ctx, initialObjects, w, ss), nil
+	//return e.WatchPredicate(ctx, e.PredicateFunc(label, field), resourceVersion)
+}
+
+// Stupid hack for Nothing selector.
+type noResultWatcher struct{}
+
+func (w noResultWatcher) Stop()                          {}
+func (w noResultWatcher) ResultChan() <-chan watch.Event { return nil }
+
+func newWatcher(apiCtx api.Context, initialObjects []runtime.Object, wch storage.WatchChan, ss []selector.Selector) watch.Interface {
+	ctx, cancel := context.WithCancel(apiCtx)
+	w := &watcher{
+		cancel: cancel,
+		wch:    wch,
+		// This is a consumer, we don't buffer here. All buffering should be handled/managed by storage system.
+		resultCh: make(chan watch.Event),
+		ss:       ss,
+	}
+	go w.run(ctx, initialObjects)
+	return w
+}
+
+type watcher struct {
+	cancel   context.CancelFunc
+	wch      storage.WatchChan
+	resultCh chan watch.Event
+	ss       []selector.Selector
+}
+
+func (w *watcher) run(ctx context.Context, initialObjects []runtime.Object) {
+	for _, o := range initialObjects {
+		e := watch.Event{
+			Type:   watch.Added,
+			Object: o,
+		}
+		select {
+		case w.resultCh <- e:
+		case <-ctx.Done():
+			return
+		}
+	}
+	for r := range w.wch {
+		if r.Type == watch.Error {
+			glog.Errorf("watcher stopped with err: %v", r.Err)
+			return
+		}
+		res := transform(r, w.ss)
+		if res == nil {
+			continue
+		}
+		select {
+		case w.resultCh <- *res:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (w *watcher) Stop() {
+	w.cancel()
+}
+func (w *watcher) ResultChan() <-chan watch.Event {
+	return w.resultCh
+}
+
+func transform(r storage.WatchResponse, ss []selector.Selector) (res *watch.Event) {
+	switch r.Type {
+	case watch.Deleted:
+		if !selector.IsSelected(r.PrevObject, ss) {
+			return nil
+		}
+		res = &watch.Event{
+			Type:   watch.Deleted,
+			Object: r.PrevObject,
+		}
+	case watch.Added:
+		if !selector.IsSelected(r.Object, ss) {
+			return nil
+		}
+		res = &watch.Event{
+			Type:   watch.Added,
+			Object: r.Object,
+		}
+	case watch.Modified:
+		curObjPasses := selector.IsSelected(r.Object, ss)
+		oldObjPasses := selector.IsSelected(r.PrevObject, ss)
+		switch {
+		case curObjPasses && oldObjPasses:
+			res = &watch.Event{
+				Type:   watch.Modified,
+				Object: r.Object,
+			}
+		case curObjPasses && !oldObjPasses:
+			res = &watch.Event{
+				Type:   watch.Added,
+				Object: r.Object,
+			}
+		case !curObjPasses && oldObjPasses:
+			res = &watch.Event{
+				Type:   watch.Deleted,
+				Object: r.PrevObject,
+			}
+		}
+	default:
+		panic("")
+	}
+	return res
 }
 
 // WatchPredicate starts a watch for the items that m matches.
-func (e *Store) WatchPredicate(ctx api.Context, m generic.Matcher, resourceVersion string) (watch.Interface, error) {
-	filter := e.createFilter(m)
-
-	if name, ok := m.MatchesSingle(); ok {
-		if key, err := e.KeyFunc(ctx, name); err == nil {
-			if err != nil {
-				return nil, err
-			}
-			return e.Storage.Watch(ctx, key, resourceVersion, filter)
-		}
-		// if we cannot extract a key based on the current context, the optimization is skipped
-	}
-
-	return e.Storage.WatchList(ctx, e.KeyRootFunc(ctx), resourceVersion, filter)
-}
+//func (e *Store) WatchPredicate(ctx api.Context, m generic.Matcher, resourceVersion string) (watch.Interface, error) {
+//	filterFunc := e.filterAndDecorateFunction(m)
+//	if name, ok := m.MatchesSingle(); ok {
+//		if key, err := e.KeyFunc(ctx, name); err == nil {
+//			if err != nil {
+//				return nil, err
+//			}
+//			return e.Storage.Watch(ctx, key, resourceVersion, filterFunc)
+//		}
+//		// if we cannot extract a key based on the current context, the optimization is skipped
+//	}
+//	return e.Storage.WatchList(ctx, e.KeyRootFunc(ctx), resourceVersion, filterFunc)
+//}
 
 func (e *Store) createFilter(m generic.Matcher) storage.Filter {
 	filterFunc := func(obj runtime.Object) bool {
@@ -882,4 +1238,70 @@ func (e *Store) Export(ctx api.Context, name string, opts unversioned.ExportOpti
 		e.CreateStrategy.PrepareForCreate(obj)
 	}
 	return obj, nil
+}
+
+// Note: The precondition is duplicate to updatefunc unfortunately..
+// NOTE!!: This code is very broken. We should try to simplify it getting rid of precondition, ignNotFound and so on.
+func GuaranteedUpdate(s storage.Interface, key string, fresh runtime.Object, ignNotFound bool, c *storage.Preconditions,
+	uf storage.UpdateFunc) (runtime.Object, error) {
+
+	out, err := s.Get(key)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		if out == nil && !ignNotFound {
+			return nil, storage.NewKeyNotFoundError(key, 0)
+		}
+
+		// setup ResponseMeta. Very stupid:
+		// - Parsing between string and uint64 a lot.
+		// - if no object exists, get fresh one and make version in ResponseMeta to be 0.
+		rm := storage.ResponseMeta{}
+		rev := uint64(0)
+		if out != nil {
+			rev, err = versioner.GlobalVersioner.ObjectResourceVersion(out)
+			if err != nil {
+				return nil, err
+			}
+			rm.ResourceVersion = rev
+		} else {
+			out = fresh
+		}
+
+		// check precondition...
+		// This is stupid. Why not check this also in user update func?
+		if c != nil && c.UID != nil {
+			if err := CheckPreconditions(key, c, out); err != nil {
+				return nil, err
+			}
+		}
+
+		// user update func. The only useful thing. User should put checkPrecondition into here.
+		uo, _, err := uf(out, rm)
+		if err != nil {
+			return nil, err
+		}
+
+		out, err = s.Put(key, uo, int64(rev))
+		if err == nil {
+			return out, nil
+		}
+		if storage.IsTestFailed(err) {
+			continue
+		}
+		return nil, err
+	}
+}
+
+func CheckPreconditions(key string, preconditions *storage.Preconditions, out runtime.Object) error {
+	objMeta, err := api.ObjectMetaFor(out)
+	if err != nil {
+		return storage.NewInternalErrorf("can't enforce preconditions %v on un-introspectable object %v, got error: %v", *preconditions, out, err)
+	}
+	if *preconditions.UID != objMeta.UID {
+		errMsg := fmt.Sprintf("Precondition failed: UID in precondition: %v, UID in object meta: %v", preconditions.UID, objMeta.UID)
+		return storage.NewInvalidObjError(key, errMsg)
+	}
+	return nil
 }

@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"k8s.io/kubernetes/pkg/labels"
 )
 
 // Selector represents a field selector.
@@ -41,6 +43,8 @@ type Selector interface {
 
 	// String returns a human readable string that represents this selector.
 	String() string
+
+	ToSelectorFields() []labels.SelectorFields
 }
 
 // Everything returns a selector that matches all fields.
@@ -79,6 +83,16 @@ func (t *hasTerm) String() string {
 	return fmt.Sprintf("%v=%v", t.field, t.value)
 }
 
+func (t *hasTerm) ToSelectorFields() []labels.SelectorFields {
+	return []labels.SelectorFields{
+		labels.SelectorFields{
+			Op:     labels.EqualsOperator,
+			Key:    t.field,
+			Values: []string{t.value},
+		},
+	}
+}
+
 type notHasTerm struct {
 	field, value string
 }
@@ -105,6 +119,16 @@ func (t *notHasTerm) Transform(fn TransformFunc) (Selector, error) {
 
 func (t *notHasTerm) String() string {
 	return fmt.Sprintf("%v!=%v", t.field, t.value)
+}
+
+func (t *notHasTerm) ToSelectorFields() []labels.SelectorFields {
+	return []labels.SelectorFields{
+		labels.SelectorFields{
+			Op:     labels.NotEqualsOperator,
+			Key:    t.field,
+			Values: []string{t.value},
+		},
+	}
 }
 
 type andTerm []Selector
@@ -163,6 +187,13 @@ func (t andTerm) String() string {
 		terms = append(terms, q.String())
 	}
 	return strings.Join(terms, ",")
+}
+
+func (t andTerm) ToSelectorFields() (ss []labels.SelectorFields) {
+	for _, term := range t {
+		ss = append(ss, term.ToSelectorFields()...)
+	}
+	return ss
 }
 
 // SelectorFromSet returns a Selector which will match exactly the given Set. A

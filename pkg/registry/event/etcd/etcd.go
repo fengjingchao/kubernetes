@@ -17,6 +17,7 @@ limitations under the License.
 package etcd
 
 import (
+	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/registry/event"
 	"k8s.io/kubernetes/pkg/registry/generic"
@@ -32,9 +33,7 @@ type REST struct {
 func NewREST(opts generic.RESTOptions, ttl uint64) *REST {
 	prefix := "/" + opts.ResourcePrefix
 
-	// We explicitly do NOT do any decoration here - switching on Cacher
-	// for events will lead to too high memory consumption.
-	storageInterface := opts.Storage
+	s := registry.StorageWithCacher(opts.StorageConfig, 0, nil, prefix, nil, nil, nil)
 
 	store := &registry.Store{
 		NewFunc:     func() runtime.Object { return &api.Event{} },
@@ -59,7 +58,16 @@ func NewREST(opts generic.RESTOptions, ttl uint64) *REST {
 		UpdateStrategy: event.Strategy,
 		DeleteStrategy: event.Strategy,
 
-		Storage: storageInterface,
+		Storage: s,
+
+		FVGetFunc: func(field string, obj runtime.Object) (string, bool) {
+			o, ok := obj.(*api.Event)
+			if !ok {
+				glog.Warningf("Unexpected type: %T", obj)
+				return "", false
+			}
+			return registry.GetFVCommon(field, o.Labels, event.GetFieldsSet(o))
+		},
 	}
 	return &REST{store}
 }

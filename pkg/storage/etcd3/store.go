@@ -59,7 +59,8 @@ type objState struct {
 
 // New returns an etcd3 implementation of storage.Interface.
 func New(c *clientv3.Client, codec runtime.Codec, prefix string) storage.Interface {
-	return newStore(c, codec, prefix)
+	panic("")
+	//return newStore(c, codec, prefix)
 }
 
 func newStore(c *clientv3.Client, codec runtime.Codec, prefix string) *store {

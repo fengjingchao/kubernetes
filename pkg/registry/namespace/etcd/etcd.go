@@ -19,6 +19,8 @@ package etcd
 import (
 	"fmt"
 
+	"github.com/golang/glog"
+
 	"k8s.io/kubernetes/pkg/api"
 	apierrors "k8s.io/kubernetes/pkg/api/errors"
 	storageerr "k8s.io/kubernetes/pkg/api/errors/storage"
@@ -53,8 +55,8 @@ func NewREST(opts generic.RESTOptions) (*REST, *StatusREST, *FinalizeREST) {
 	prefix := "/" + opts.ResourcePrefix
 
 	newListFunc := func() runtime.Object { return &api.NamespaceList{} }
-	storageInterface := opts.Decorator(
-		opts.Storage,
+	storageInterface := registry.StorageWithCacher(
+		opts.StorageConfig,
 		cachesize.GetWatchCacheSizeByResource(cachesize.Namespaces),
 		&api.Namespace{},
 		prefix,
@@ -85,6 +87,15 @@ func NewREST(opts generic.RESTOptions) (*REST, *StatusREST, *FinalizeREST) {
 		ReturnDeletedObject: true,
 
 		Storage: storageInterface,
+
+		FVGetFunc: func(field string, obj runtime.Object) (string, bool) {
+			o, ok := obj.(*api.Namespace)
+			if !ok {
+				glog.Warningf("Unexpected type: %T", obj)
+				return "", false
+			}
+			return registry.GetFVCommon(field, o.Labels, namespace.NamespaceToSelectableFields(o))
+		},
 	}
 
 	statusStore := *store
@@ -133,9 +144,10 @@ func (r *REST) Delete(ctx api.Context, name string, options *api.DeleteOptions) 
 
 		preconditions := storage.Preconditions{UID: options.Preconditions.UID}
 
-		out := r.Store.NewFunc()
-		err = r.Store.Storage.GuaranteedUpdate(
-			ctx, key, out, false, &preconditions,
+		//out := r.Store.NewFunc()
+		//err = r.Store.Storage.GuaranteedUpdate(
+		out, err := registry.GuaranteedUpdate(
+			r.Store.Storage, key, r.Store.NewFunc(), false, &preconditions,
 			storage.SimpleUpdate(func(existing runtime.Object) (runtime.Object, error) {
 				existingNamespace, ok := existing.(*api.Namespace)
 				if !ok {

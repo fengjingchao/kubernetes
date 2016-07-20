@@ -17,14 +17,19 @@ limitations under the License.
 package generic
 
 import (
-	pkgstorage "k8s.io/kubernetes/pkg/storage"
+	"k8s.io/kubernetes/pkg/runtime"
+	"k8s.io/kubernetes/pkg/storage/storagebackend"
 )
 
 // RESTOptions is set of configuration options to generic registries.
 type RESTOptions struct {
-	Storage                 pkgstorage.Interface
-	Decorator               StorageDecorator
+	StorageConfig           StorageConfig
 	DeleteCollectionWorkers int
 
 	ResourcePrefix string
+}
+
+type StorageConfig struct {
+	Config storagebackend.Config
+	Codec  runtime.Codec
 }

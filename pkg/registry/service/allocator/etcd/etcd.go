@@ -19,12 +19,15 @@ package etcd
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 
 	"k8s.io/kubernetes/pkg/api"
 	k8serr "k8s.io/kubernetes/pkg/api/errors"
 	storeerr "k8s.io/kubernetes/pkg/api/errors/storage"
 	"k8s.io/kubernetes/pkg/api/unversioned"
+	"k8s.io/kubernetes/pkg/registry/generic"
+	"k8s.io/kubernetes/pkg/registry/generic/registry"
 	"k8s.io/kubernetes/pkg/registry/service"
 	"k8s.io/kubernetes/pkg/registry/service/allocator"
 	"k8s.io/kubernetes/pkg/runtime"
@@ -58,10 +61,13 @@ var _ service.RangeRegistry = &Etcd{}
 
 // NewEtcd returns an allocator that is backed by Etcd and can manage
 // persisting the snapshot state of allocation after each allocation is made.
-func NewEtcd(alloc allocator.Snapshottable, baseKey string, resource unversioned.GroupResource, storage storage.Interface) *Etcd {
+func NewEtcd(alloc allocator.Snapshottable, baseKey string, resource unversioned.GroupResource, config generic.StorageConfig) *Etcd {
+	// TODO: better handle this case of single key get and update.
+	s := registry.StorageWithCacher(config, 0, nil, filepath.Dir(baseKey), nil, nil, nil)
+
 	return &Etcd{
 		alloc:    alloc,
-		storage:  storage,
+		storage:  s,
 		baseKey:  baseKey,
 		resource: resource,
 	}
@@ -143,7 +149,8 @@ func (e *Etcd) Release(item int) error {
 
 // tryUpdate performs a read-update to persist the latest snapshot state of allocation.
 func (e *Etcd) tryUpdate(fn func() error) error {
-	err := e.storage.GuaranteedUpdate(context.TODO(), e.baseKey, &api.RangeAllocation{}, true, nil,
+	//err := e.storage.GuaranteedUpdate(context.TODO(), e.baseKey, &api.RangeAllocation{}, true, nil,
+	_, err := registry.GuaranteedUpdate(e.storage, e.baseKey, &api.RangeAllocation{}, true, nil,
 		storage.SimpleUpdate(func(input runtime.Object) (output runtime.Object, err error) {
 			existing := input.(*api.RangeAllocation)
 			if len(existing.ResourceVersion) == 0 {
@@ -162,18 +169,22 @@ func (e *Etcd) tryUpdate(fn func() error) error {
 			existing.Range = rangeSpec
 			existing.Data = data
 			return existing, nil
-		}),
-	)
+		}))
 	return storeerr.InterpretUpdateError(err, e.resource, "")
 }
 
 // Get returns an api.RangeAllocation that represents the current state in
 // etcd. If the key does not exist, the object will have an empty ResourceVersion.
 func (e *Etcd) Get() (*api.RangeAllocation, error) {
-	existing := &api.RangeAllocation{}
-	if err := e.storage.Get(context.TODO(), e.baseKey, existing, true); err != nil {
-		return nil, storeerr.InterpretGetError(err, e.resource, "")
+	out, err := registry.Get(e.storage, context.TODO(), e.baseKey, "", e.resource, &api.RangeAllocation{}, true)
+	if err != nil {
+		return nil, err
 	}
+	existing := out.(*api.RangeAllocation)
+	//existing := &api.RangeAllocation{}
+	//if err := e.storage.Get(context.TODO(), e.baseKey, existing, true); err != nil {
+	//	return nil, storeerr.InterpretGetError(err, e.resource, "")
+	//}
 	return existing, nil
 }
 
@@ -184,7 +195,8 @@ func (e *Etcd) CreateOrUpdate(snapshot *api.RangeAllocation) error {
 	defer e.lock.Unlock()
 
 	last := ""
-	err := e.storage.GuaranteedUpdate(context.TODO(), e.baseKey, &api.RangeAllocation{}, true, nil,
+	//err := e.storage.GuaranteedUpdate(context.TODO(), e.baseKey, &api.RangeAllocation{}, true, nil,
+	_, err := registry.GuaranteedUpdate(e.storage, e.baseKey, &api.RangeAllocation{}, true, nil,
 		storage.SimpleUpdate(func(input runtime.Object) (output runtime.Object, err error) {
 			existing := input.(*api.RangeAllocation)
 			switch {
@@ -197,8 +209,7 @@ func (e *Etcd) CreateOrUpdate(snapshot *api.RangeAllocation) error {
 			}
 			last = snapshot.ResourceVersion
 			return snapshot, nil
-		}),
-	)
+		}))
 	if err != nil {
 		return storeerr.InterpretUpdateError(err, e.resource, "")
 	}

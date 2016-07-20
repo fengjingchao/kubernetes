@@ -43,16 +43,17 @@ import (
 // Creates a new storage interface from the client
 // TODO: deprecate in favor of storage.Config abstraction over time
 func NewEtcdStorage(client etcd.Client, codec runtime.Codec, prefix string, quorum bool, cacheSize int) storage.Interface {
-	return &etcdHelper{
-		etcdMembersAPI: etcd.NewMembersAPI(client),
-		etcdKeysAPI:    etcd.NewKeysAPI(client),
-		codec:          codec,
-		versioner:      APIObjectVersioner{},
-		copier:         api.Scheme,
-		pathPrefix:     path.Join("/", prefix),
-		quorum:         quorum,
-		cache:          utilcache.NewCache(cacheSize),
-	}
+	panic("")
+	//return &etcdHelper{
+	//	etcdMembersAPI: etcd.NewMembersAPI(client),
+	//	etcdKeysAPI:    etcd.NewKeysAPI(client),
+	//	codec:          codec,
+	//	versioner:      APIObjectVersioner{},
+	//	copier:         api.Scheme,
+	//	pathPrefix:     path.Join("/", prefix),
+	//	quorum:         quorum,
+	//	cache:          utilcache.NewCache(cacheSize),
+	//}
 }
 
 // etcdHelper is the reference implementation of storage.Interface.
@@ -627,7 +628,7 @@ func toStorageErr(err error, key string, rv int64) error {
 	case etcdutil.IsEtcdNotFound(err):
 		return storage.NewKeyNotFoundError(key, rv)
 	case etcdutil.IsEtcdNodeExist(err):
-		return storage.NewKeyExistsError(key, rv)
+		return storage.NewKeyExistsError(key, 0)
 	case etcdutil.IsEtcdTestFailed(err):
 		return storage.NewResourceVersionConflictsError(key, rv)
 	case etcdutil.IsEtcdUnreachable(err):
