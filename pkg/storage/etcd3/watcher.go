@@ -59,6 +59,7 @@ type watchChan struct {
 	incomingEventChan chan *event
 	resultChan        chan watch.Event
 	errChan           chan error
+	stopWait          sync.WaitGroup
 }
 
 func newWatcher(client *clientv3.Client, codec runtime.Codec, versioner storage.Versioner) *watcher {
@@ -81,6 +82,7 @@ func (w *watcher) Watch(ctx context.Context, key string, rev int64, recursive bo
 		key += "/"
 	}
 	wc := w.createWatchChan(ctx, key, rev, recursive, filter)
+	wc.stopWait.Add(1)
 	go wc.run()
 	return wc, nil
 }
@@ -123,10 +125,12 @@ func (wc *watchChan) run() {
 	// we need to wait until resultChan wouldn't be sent to anymore
 	resultChanWG.Wait()
 	close(wc.resultChan)
+	wc.stopWait.Done()
 }
 
 func (wc *watchChan) Stop() {
 	wc.cancel()
+	wc.stopWait.Wait()
 }
 
 func (wc *watchChan) ResultChan() <-chan watch.Event {
