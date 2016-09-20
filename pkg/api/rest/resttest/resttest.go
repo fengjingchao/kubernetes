@@ -35,6 +35,8 @@ import (
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/types"
 	"k8s.io/kubernetes/pkg/util/wait"
+
+	"golang.org/x/net/context"
 )
 
 type Tester struct {
@@ -1234,6 +1236,7 @@ func (t *Tester) testWatchFields(obj runtime.Object, emitFn EmitFunc, fieldsPass
 	for _, field := range fieldsPass {
 		for _, action := range actions {
 			options := &api.ListOptions{FieldSelector: field.AsSelector(), ResourceVersion: "1"}
+			ctx = context.WithValue(context.WithValue(ctx, "field", field), "action", action)
 			watcher, err := t.storage.(rest.Watcher).Watch(ctx, options)
 			if err != nil {
 				t.Errorf("unexpected error: %v, %v", err, action)
@@ -1262,6 +1265,7 @@ func (t *Tester) testWatchFields(obj runtime.Object, emitFn EmitFunc, fieldsPass
 	for _, field := range fieldsFail {
 		for _, action := range actions {
 			options := &api.ListOptions{FieldSelector: field.AsSelector(), ResourceVersion: "1"}
+			ctx = context.WithValue(context.WithValue(ctx, "field", field), "action", action)
 			watcher, err := t.storage.(rest.Watcher).Watch(ctx, options)
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
@@ -1284,11 +1288,12 @@ func (t *Tester) testWatchFields(obj runtime.Object, emitFn EmitFunc, fieldsPass
 }
 
 func (t *Tester) testWatchLabels(obj runtime.Object, emitFn EmitFunc, labelsPass, labelsFail []labels.Set, actions []string) {
-	ctx := t.TestContext()
+	ctx := t.TestContext().(context.Context)
 
 	for _, label := range labelsPass {
 		for _, action := range actions {
 			options := &api.ListOptions{LabelSelector: label.AsSelector(), ResourceVersion: "1"}
+			ctx = context.WithValue(context.WithValue(ctx, "label", label), "action", action)
 			watcher, err := t.storage.(rest.Watcher).Watch(ctx, options)
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
@@ -1316,6 +1321,7 @@ func (t *Tester) testWatchLabels(obj runtime.Object, emitFn EmitFunc, labelsPass
 	for _, label := range labelsFail {
 		for _, action := range actions {
 			options := &api.ListOptions{LabelSelector: label.AsSelector(), ResourceVersion: "1"}
+			ctx = context.WithValue(context.WithValue(ctx, "label", label), "action", action)
 			watcher, err := t.storage.(rest.Watcher).Watch(ctx, options)
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
