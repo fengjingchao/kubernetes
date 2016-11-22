@@ -37,6 +37,10 @@ var (
 	ErrNoAvailableEndpoints = errors.New("etcdclient: no available endpoints")
 )
 
+func init() {
+	prometheus.EnableClientHandlingTimeHistogram()
+}
+
 // Client provides and manages an etcd v3 client session.
 type Client struct {
 	Cluster
