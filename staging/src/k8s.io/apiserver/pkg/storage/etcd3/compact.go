@@ -108,6 +108,13 @@ func compactor(ctx context.Context, client *clientv3.Client, interval time.Durat
 	// - What happened under heavy load scenarios? Initially, each apiserver will do only one compaction
 	//   every 5 minutes. This is very unlikely affecting or affected w.r.t. server load.
 
+	defer func() {
+		endpointsMapMu.Lock()
+		defer endpointsMapMu.Unlock()
+		for _, ep := range client.Endpoints() {
+			delete(endpointsMap, ep)
+		}
+	}()
 	var compactTime int64
 	var rev int64
 	var err error
